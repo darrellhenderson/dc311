@@ -14,6 +14,7 @@ import json
 import time
 import requests
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -75,7 +76,10 @@ DATE_FIELDS = {
     "EDITED",
 }
 
-PAGE_SIZE = 500
+# Hard cap enforced by the server regardless of resultRecordCount requested.
+PAGE_SIZE = 1_000
+# Parallel workers: tuned to saturate server I/O without triggering rate limits.
+MAX_WORKERS = 8
 DC_TZ = ZoneInfo("America/New_York")
 SLOW_PAGE_SEC = 5.0
 
@@ -170,6 +174,40 @@ def epoch_ms_to_dt(ms):
     )
 
 
+def _fetch_by_ids(url: str, object_ids: list[int], batch_idx: int) -> tuple[int, list[dict], float]:
+    """Fetch one batch of records by explicit OBJECTID list via POST.
+
+    Using objectIds instead of resultOffset avoids the server-side sequential
+    scan that makes offset-based pagination slow (~5s/page on layer 18).
+    Returns (batch_idx, parsed_attrs_list, elapsed_sec).
+    """
+    started = time.monotonic()
+    resp = requests.post(
+        url,
+        data={
+            "objectIds": ",".join(map(str, object_ids)),
+            "outFields": ",".join(FIELDS),
+            "returnGeometry": "false",
+            "f": "json",
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(f"Batch {batch_idx} failed: {data['error']}")
+
+    attrs_list = []
+    for feature in data.get("features", []):
+        attrs = feature["attributes"]
+        for field in DATE_FIELDS:
+            if field in attrs:
+                attrs[field] = epoch_ms_to_dt(attrs.get(field))
+        attrs_list.append(attrs)
+
+    return batch_idx, attrs_list, time.monotonic() - started
+
+
 def fetch_all(
     layer_id: int,
     where: str,
@@ -178,143 +216,123 @@ def fetch_all(
     checkpoint_every_pages: int = 10,
     layer_label: str = "",
 ) -> list[dict]:
-    """Paginate through all records matching `where` on `layer_id`."""
+    """Fetch all records matching `where` on `layer_id`.
+
+    Two-phase strategy that avoids the ~5s/page offset-scan penalty on
+    large layers:
+      1. returnIdsOnly — retrieve all matching OBJECTIDs in one fast call.
+      2. Concurrent POST batches by objectIds — server looks up records by
+         primary key, no sequential offset scan needed (~0.1s vs ~5s per page).
+    """
     url = BASE_URL.format(layer_id=layer_id)
-    records: list[dict] = []
-    offset = 0
     layer_started = time.monotonic()
-    page_num = 0
     slow_pages = 0
 
-    log(f"  [{layer_label}] Counting records…")
-    count_started = time.monotonic()
-    count_resp = requests.get(
+    # Phase 1: get all matching OBJECTIDs (single fast request).
+    log(f"  [{layer_label}] Fetching matching OBJECTIDs…")
+    ids_started = time.monotonic()
+    ids_resp = requests.get(
         url,
-        params={
-            "where": where,
-            "returnCountOnly": "true",
-            "f": "json",
-        },
+        params={"where": where, "returnIdsOnly": "true", "f": "json"},
         timeout=60,
     )
-    count_resp.raise_for_status()
-    count_body = count_resp.json()
-    if "error" in count_body:
-        raise RuntimeError(f"Count query failed: {count_body['error']}")
-    total = count_body.get("count", 0)
-    count_elapsed = time.monotonic() - count_started
+    ids_resp.raise_for_status()
+    ids_body = ids_resp.json()
+    if "error" in ids_body:
+        raise RuntimeError(f"ID query failed: {ids_body['error']}")
+    object_ids: list[int] = ids_body.get("objectIds") or []
+    total = len(object_ids)
+    ids_elapsed = time.monotonic() - ids_started
     log(
         f"  [{layer_label}] Total records: {total:,} "
-        f"(count query {format_duration(count_elapsed)})"
+        f"(ID fetch {format_duration(ids_elapsed)})"
     )
 
     if checkpoint_path:
         write_checkpoint(checkpoint_path, {
-            "phase": "count_complete",
+            "phase": "ids_fetched",
             "layer_id": layer_id,
             "layer_label": layer_label,
             "where": where,
             "total": total,
-            "offset": 0,
-            "records_fetched": 0,
             "elapsed_sec": round(time.monotonic() - layer_started, 1),
         })
 
     if total == 0:
         return []
 
-    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    # Phase 2: fetch records in concurrent batches keyed by OBJECTID.
+    batches = [object_ids[i:i + PAGE_SIZE] for i in range(0, total, PAGE_SIZE)]
+    total_batches = len(batches)
     log(
-        f"  [{layer_label}] Fetching {total_pages:,} pages "
-        f"({PAGE_SIZE} records/page)…"
+        f"  [{layer_label}] Fetching {total_batches:,} batches "
+        f"({PAGE_SIZE:,} IDs/batch, {MAX_WORKERS} workers)…"
     )
 
-    while offset < total:
-        page_num += 1
-        page_started = time.monotonic()
-        resp = requests.get(
-            url,
-            params={
-                "where": where,
-                "outFields": ",".join(FIELDS),
-                "returnGeometry": "false",
-                "resultRecordCount": PAGE_SIZE,
-                "resultOffset": offset,
-                "orderByFields": "ADDDATE DESC",
-                "f": "json",
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            raise RuntimeError(
-                f"Page {page_num} failed at offset {offset}: {data['error']}"
+    # Keyed by batch_idx to preserve insertion order when reassembling.
+    batch_buckets: dict[int, list[dict]] = {}
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_by_ids, url, batch, idx): idx
+            for idx, batch in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            batch_idx, attrs_list, batch_elapsed = future.result()
+            batch_buckets[batch_idx] = attrs_list
+            completed += 1
+            if batch_elapsed >= SLOW_PAGE_SEC:
+                slow_pages += 1
+
+            layer_elapsed = time.monotonic() - layer_started
+            records_so_far = sum(len(v) for v in batch_buckets.values())
+            should_log = (
+                completed == 1
+                or completed % checkpoint_every_pages == 0
+                or completed == total_batches
             )
-
-        features = data.get("features", [])
-        if not features:
-            log(f"  [{layer_label}] Empty page at offset {offset}; stopping early.")
-            break
-
-        for feature in features:
-            attrs = feature["attributes"]
-            for field in DATE_FIELDS:
-                if field in attrs:
-                    attrs[field] = epoch_ms_to_dt(attrs.get(field))
-            records.append(attrs)
-
-        offset += len(features)
-        page_elapsed = time.monotonic() - page_started
-        layer_elapsed = time.monotonic() - layer_started
-        if page_elapsed >= SLOW_PAGE_SEC:
-            slow_pages += 1
-
-        should_log = (
-            page_num == 1
-            or page_num % checkpoint_every_pages == 0
-            or offset >= total
-        )
-        if should_log:
-            pct = (offset / total) * 100 if total else 100.0
-            rate = offset / layer_elapsed if layer_elapsed > 0 else 0.0
-            log(
-                f"  [{layer_label}] Page {page_num}/{total_pages} | "
-                f"{offset:,}/{total:,} ({pct:.1f}%) | "
-                f"page {page_elapsed:.2f}s | "
-                f"elapsed {format_duration(layer_elapsed)} | "
-                f"ETA {format_eta(layer_elapsed, offset, total)} | "
-                f"{rate:.0f} rec/s"
-            )
-            if page_elapsed >= SLOW_PAGE_SEC:
+            if should_log:
+                pct = (records_so_far / total) * 100 if total else 100.0
+                rate = records_so_far / layer_elapsed if layer_elapsed > 0 else 0.0
                 log(
-                    f"  [{layer_label}] ⚠ slow page ({page_elapsed:.1f}s) "
-                    f"at offset {offset - len(features):,}"
+                    f"  [{layer_label}] Batch {completed}/{total_batches} | "
+                    f"{records_so_far:,}/{total:,} ({pct:.1f}%) | "
+                    f"batch {batch_elapsed:.2f}s | "
+                    f"elapsed {format_duration(layer_elapsed)} | "
+                    f"ETA {format_eta(layer_elapsed, records_so_far, total)} | "
+                    f"{rate:.0f} rec/s"
                 )
+                if batch_elapsed >= SLOW_PAGE_SEC:
+                    log(
+                        f"  [{layer_label}] ⚠ slow batch ({batch_elapsed:.1f}s) "
+                        f"at batch {batch_idx}"
+                    )
+                if checkpoint_path:
+                    write_checkpoint(checkpoint_path, {
+                        "phase": "fetching",
+                        "layer_id": layer_id,
+                        "layer_label": layer_label,
+                        "where": where,
+                        "total": total,
+                        "batches_complete": completed,
+                        "total_batches": total_batches,
+                        "records_fetched": records_so_far,
+                        "elapsed_sec": round(layer_elapsed, 1),
+                        "records_per_sec": round(rate, 1),
+                        "slow_batches": slow_pages,
+                        "last_batch_sec": round(batch_elapsed, 2),
+                    })
 
-        if checkpoint_path and should_log:
-            write_checkpoint(checkpoint_path, {
-                "phase": "fetching",
-                "layer_id": layer_id,
-                "layer_label": layer_label,
-                "where": where,
-                "total": total,
-                "offset": offset,
-                "page": page_num,
-                "total_pages": total_pages,
-                "records_fetched": len(records),
-                "elapsed_sec": round(layer_elapsed, 1),
-                "records_per_sec": round(rate, 1),
-                "slow_pages": slow_pages,
-                "last_page_sec": round(page_elapsed, 2),
-            })
+    # Reassemble in original batch order for deterministic output.
+    records = [row for idx in sorted(batch_buckets) for row in batch_buckets[idx]]
 
     layer_elapsed = time.monotonic() - layer_started
     rate = len(records) / layer_elapsed if layer_elapsed > 0 else 0.0
     log(
         f"  [{layer_label}] Done: {len(records):,} records in "
         f"{format_duration(layer_elapsed)} ({rate:.0f} rec/s, "
-        f"{slow_pages} slow pages)"
+        f"{slow_pages} slow batches)"
     )
 
     if checkpoint_path:
@@ -326,7 +344,7 @@ def fetch_all(
             "records_fetched": len(records),
             "elapsed_sec": round(layer_elapsed, 1),
             "records_per_sec": round(rate, 1),
-            "slow_pages": slow_pages,
+            "slow_batches": slow_pages,
         })
 
     return records

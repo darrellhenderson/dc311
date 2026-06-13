@@ -12,20 +12,20 @@ import hashlib
 import json
 import math
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 from category_rules import (  # noqa: E402
     CATEGORY_MAP,
-    CLOSED_STATUSES,
     OPEN_STATUSES,
     WARD_ORDER,
-    assign_category,
     is_excluded_service_type,
 )
 
@@ -37,6 +37,19 @@ ROLLUP_DIR = OUT_DIR / "rollups"
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 AGE_BUCKETS = ["< 1 week", "1–4 weeks", "1–2 months", "2–3 months"]
 
+# Only columns needed for the dashboard build — skips unused CSV fields on read.
+CSV_COLS = [
+    "SERVICEREQUESTID", "ADDDATE", "RESOLUTIONDATE", "SERVICEDUEDATE",
+    "SERVICECODE", "SERVICECODEDESCRIPTION", "SERVICETYPECODEDESCRIPTION",
+    "ORGANIZATIONACRONYM", "SERVICEORDERSTATUS", "PRIORITY",
+    "STREETADDRESS", "CITY", "STATE", "ZIPCODE", "DETAILS", "WARD",
+    "LATITUDE", "LONGITUDE",
+]
+
+
+# ---------------------------------------------------------------------------
+# Dictionary encoder (string → integer index, accumulated globally)
+# ---------------------------------------------------------------------------
 
 class DictEncoder:
     """Assigns integer indices to repeated strings."""
@@ -48,39 +61,27 @@ class DictEncoder:
     def encode(self, table: str, value: str | None) -> int | None:
         if value is None or value == "":
             return None
-        if value not in self._lookup[table]:
+        lut = self._lookup[table]
+        if value not in lut:
             idx = len(self.tables[table])
             self.tables[table].append(value)
-            self._lookup[table][value] = idx
-        return self._lookup[table][value]
+            lut[value] = idx
+        return lut[value]
+
+    def factorize(self, table: str, series: pd.Series) -> np.ndarray:
+        """Encode a string column to int32 indices via pd.factorize (C-speed)."""
+        s = series.fillna("").astype(str)
+        s = s.mask(s.isin(("", "nan")), other=np.nan)
+        codes, uniques = pd.factorize(s, sort=False, use_na_sentinel=True)
+        self.tables[table] = [str(u) for u in uniques if pd.notna(u)]
+        out = codes.astype(np.float64)
+        out[codes < 0] = np.nan
+        return out
 
 
-def parse_date_ms(val) -> int | None:
-    if val is None or (isinstance(val, float) and math.isnan(val)):
-        return None
-    s = str(val).strip()
-    if not s:
-        return None
-    if s.endswith(" UTC"):
-        s = s[:-4]
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-            return int(dt.timestamp() * 1000)
-        except ValueError:
-            continue
-    return None
-
-
-def age_bucket(days: int) -> int:
-    if days < 7:
-        return 0
-    if days < 30:
-        return 1
-    if days < 60:
-        return 2
-    return 3
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def median(vals: list[float]) -> float:
     if not vals:
@@ -102,77 +103,133 @@ def percentile(vals: list[float], p: float) -> float:
     return s[lo] * (1 - w) + s[hi] * w
 
 
-def process_row(row: pd.Series, now_ms: int, enc: DictEncoder) -> tuple[dict | None, bool]:
-    """Returns (compact_row_or_None, dropped_for_ward)."""
-    if row.get("WARD") not in WARD_ORDER:
-        return None, True
+def age_bucket_vec_np(age_days: np.ndarray) -> np.ndarray:
+    """Vectorised age-bucket assignment: 0–3."""
+    buckets = np.full(len(age_days), 3, dtype=np.int8)
+    buckets[age_days < 60] = 2
+    buckets[age_days < 30] = 1
+    buckets[age_days < 7] = 0
+    return buckets
 
-    add_ms = parse_date_ms(row.get("ADDDATE"))
-    if add_ms is None:
-        return None, False
 
-    svc = str(row.get("SERVICECODEDESCRIPTION") or "")
-    if is_excluded_service_type(svc):
-        return None, False
+def parse_dates_ms(series: pd.Series) -> np.ndarray:
+    """Parse UTC date strings to epoch-ms float64 (NaN where missing)."""
+    parsed = pd.to_datetime(
+        series.str.replace(" UTC", "", regex=False),
+        format="%Y-%m-%d %H:%M:%S",
+        errors="coerce",
+        utc=True,
+    )
+    out = np.full(len(parsed), np.nan, dtype=np.float64)
+    ok = parsed.notna()
+    out[ok] = parsed[ok].astype("int64") // 1_000_000
+    return out
 
-    res_ms = parse_date_ms(row.get("RESOLUTIONDATE"))
-    due_ms = parse_date_ms(row.get("SERVICEDUEDATE"))
-    status = str(row.get("SERVICEORDERSTATUS") or "")
-    is_open = status in OPEN_STATUSES
-    is_closed = status.startswith("Closed")
 
-    age_days = int((now_ms - add_ms) / 86400000)
-    resolution_days = None
-    if is_closed and res_ms is not None:
-        resolution_days = round((res_ms - add_ms) / 86400000, 2)
+def build_compact_df(df: pd.DataFrame, enc: DictEncoder) -> pd.DataFrame:
+    """Transform raw CSV rows into compact encoded rows using vectorised ops."""
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    add_dt = datetime.fromtimestamp(add_ms / 1000, tz=timezone.utc)
-    week_ms = int(datetime(add_dt.year, add_dt.month, add_dt.day, tzinfo=timezone.utc).timestamp() * 1000) - add_dt.weekday() * 86400000
+    # --- Single-pass filter: ward, date, excluded service types ---
+    add_dt = pd.to_datetime(
+        df["ADDDATE"].str.replace(" UTC", "", regex=False),
+        format="%Y-%m-%d %H:%M:%S",
+        errors="coerce",
+        utc=True,
+    )
+    svc = df["SERVICECODEDESCRIPTION"].fillna("").astype(str)
+    mask = (
+        df["WARD"].isin(WARD_ORDER)
+        & add_dt.notna()
+        & ~svc.isin({"Test", "Sample SR"})
+    )
+    df = df.loc[mask].reset_index(drop=True)
+    add_dt = add_dt.loc[mask].reset_index(drop=True)
+    svc = svc.loc[mask].reset_index(drop=True)
 
-    cat = assign_category(svc)
+    add_ms = (add_dt.astype("int64") // 1_000_000).values
+    res_ms = parse_dates_ms(df["RESOLUTIONDATE"])
+    due_ms = parse_dates_ms(df["SERVICEDUEDATE"])
 
-    sc_raw = row.get("SERVICECODE")
-    try:
-        sc = int(sc_raw) if pd.notna(sc_raw) else None
-    except (ValueError, TypeError):
-        sc = enc.encode("serviceCodes", str(sc_raw))
+    status = df["SERVICEORDERSTATUS"].fillna("").astype(str)
+    is_open = status.isin(OPEN_STATUSES).astype(np.int8).values
+    is_closed = status.str.startswith("Closed").astype(np.int8).values
 
-    pri_raw = row.get("PRIORITY")
-    try:
-        pri = int(pri_raw) if pd.notna(pri_raw) else None
-    except (ValueError, TypeError):
-        pri = enc.encode("priorities", str(pri_raw))
+    age_days = ((now_ms - add_ms) / 86_400_000).astype(np.int32)
+    resolution_days = np.where(
+        (is_closed == 1) & ~np.isnan(res_ms),
+        np.round((res_ms - add_ms) / 86_400_000, 2),
+        np.nan,
+    ).astype(np.float64)
 
-    return {
-        "id": str(row.get("SERVICEREQUESTID") or ""),
-        "a": add_ms,
+    hour = add_dt.dt.hour.to_numpy(dtype=np.int8)
+    dow_int = add_dt.dt.dayofweek.to_numpy(dtype=np.int8)
+    week_ms = (
+        (add_dt.dt.normalize() - pd.to_timedelta(add_dt.dt.dayofweek, unit="D"))
+        .astype("int64") // 1_000_000
+    ).to_numpy(dtype=np.int64)
+
+    cat_series = svc.map(CATEGORY_MAP).fillna("Other")
+    dow_labels = pd.Series(np.array(DAY_NAMES)[dow_int])
+
+    svc_idx = enc.factorize("serviceTypes", svc)
+    agency_idx = enc.factorize("agencies", df["ORGANIZATIONACRONYM"])
+    status_idx = enc.factorize("statuses", status)
+    ward_idx = enc.factorize("wards", df["WARD"])
+    cat_idx = enc.factorize("categories", cat_series)
+    dow_idx = enc.factorize("dayOfWeek", dow_labels)
+    zip_idx = enc.factorize("zipcodes", df["ZIPCODE"])
+    city_idx = enc.factorize("cities", df["CITY"])
+    state_idx = enc.factorize("states", df["STATE"])
+    stc_idx = enc.factorize("serviceTypeCodes", df["SERVICETYPECODEDESCRIPTION"])
+
+    sc_numeric = pd.to_numeric(df["SERVICECODE"], errors="coerce").to_numpy(dtype=np.float64)
+    sc_nan = np.isnan(sc_numeric)
+    if sc_nan.any():
+        sc_codes = enc.factorize("serviceCodes", df["SERVICECODE"].where(sc_nan))
+        sc_numeric[sc_nan] = sc_codes[sc_nan]
+
+    pri_numeric = pd.to_numeric(df["PRIORITY"], errors="coerce").to_numpy(dtype=np.float64)
+    pri_nan = np.isnan(pri_numeric)
+    if pri_nan.any():
+        pri_codes = enc.factorize("priorities", df["PRIORITY"].where(pri_nan))
+        pri_numeric[pri_nan] = pri_codes[pri_nan]
+
+    return pd.DataFrame({
+        "id": df["SERVICEREQUESTID"].fillna("").astype(str).to_numpy(),
+        "a": add_ms.astype(np.int64),
         "r": res_ms,
         "dd": due_ms,
-        "st": enc.encode("serviceTypes", svc),
-        "ag": enc.encode("agencies", str(row.get("ORGANIZATIONACRONYM") or "") or None),
-        "ss": enc.encode("statuses", status),
-        "w": enc.encode("wards", str(row.get("WARD") or "")),
-        "c": enc.encode("categories", cat),
-        "lat": float(row["LATITUDE"]) if pd.notna(row.get("LATITUDE")) else None,
-        "lng": float(row["LONGITUDE"]) if pd.notna(row.get("LONGITUDE")) else None,
-        "io": 1 if is_open else 0,
-        "ic": 1 if is_closed else 0,
+        "st": svc_idx.astype(np.int32),
+        "ag": agency_idx,
+        "ss": status_idx.astype(np.int32),
+        "w": ward_idx.astype(np.int32),
+        "c": cat_idx.astype(np.int32),
+        "lat": pd.to_numeric(df["LATITUDE"], errors="coerce").to_numpy(dtype=np.float64),
+        "lng": pd.to_numeric(df["LONGITUDE"], errors="coerce").to_numpy(dtype=np.float64),
+        "io": is_open,
+        "ic": is_closed,
         "ad": age_days,
         "rd": resolution_days,
-        "h": add_dt.hour,
-        "dow": enc.encode("dayOfWeek", DAY_NAMES[add_dt.weekday()]),
+        "h": hour,
+        "dow": dow_idx.astype(np.int32),
         "wk": week_ms,
-        "ab": age_bucket(age_days),
-        "addr": str(row.get("STREETADDRESS") or "") or None,
-        "det": str(row.get("DETAILS") or "") or None,
-        "zip": enc.encode("zipcodes", str(row.get("ZIPCODE") or "") or None),
-        "city": enc.encode("cities", str(row.get("CITY") or "") or None),
-        "state": enc.encode("states", str(row.get("STATE") or "") or None),
-        "sc": sc,
-        "pri": pri,
-        "stc": enc.encode("serviceTypeCodes", str(row.get("SERVICETYPECODEDESCRIPTION") or "") or None),
-    }, False
+        "ab": age_bucket_vec_np(age_days),
+        "addr": df["STREETADDRESS"].fillna("").astype(str).to_numpy(),
+        "det": df["DETAILS"].fillna("").astype(str).to_numpy(),
+        "zip": zip_idx,
+        "city": city_idx,
+        "state": state_idx,
+        "sc": sc_numeric,
+        "pri": pri_numeric,
+        "stc": stc_idx,
+        "_month": add_dt.dt.strftime("%Y-%m").to_numpy(),
+    })
 
+
+# ---------------------------------------------------------------------------
+# Rollup builders (operate on lists of dicts — same logic as before)
+# ---------------------------------------------------------------------------
 
 def build_sla_rollup(rows: list[dict], enc: DictEncoder) -> list[dict]:
     """Pre-aggregate SLA table rows for a shard."""
@@ -180,9 +237,11 @@ def build_sla_rollup(rows: list[dict], enc: DictEncoder) -> list[dict]:
     for row in rows:
         st = row["st"]
         if st not in groups:
+            ag = row["ag"]
+            ag_valid = ag is not None and not (isinstance(ag, float) and math.isnan(ag))
             groups[st] = {
-                "category": enc.tables["categories"][row["c"]],
-                "agency": enc.tables["agencies"][row["ag"]] if row["ag"] is not None else "",
+                "category": enc.tables["categories"][int(row["c"])],
+                "agency": enc.tables["agencies"][int(ag)] if ag_valid else "",
                 "sla_days": [],
                 "total": 0,
                 "closed": 0,
@@ -195,18 +254,20 @@ def build_sla_rollup(rows: list[dict], enc: DictEncoder) -> list[dict]:
         g["total"] += 1
         if row["ic"]:
             g["closed"] += 1
-        if row["dd"] is not None:
-            sla_d = (row["dd"] - row["a"]) / 86400000
+        dd = row["dd"]
+        rd = row["rd"]
+        if dd is not None and not (isinstance(dd, float) and math.isnan(dd)):
+            sla_d = (dd - row["a"]) / 86_400_000
             g["sla_days"].append(sla_d)
-            if row["ic"] and row["rd"] is not None:
-                if row["rd"] <= sla_d:
+            if row["ic"] and rd is not None and not (isinstance(rd, float) and math.isnan(rd)):
+                if rd <= sla_d:
                     g["met_sla_count"] += 1
                 else:
                     g["missed_sla_count"] += 1
             if row["io"] and row["ad"] > sla_d:
                 g["open_past_sla_count"] += 1
-        if row["rd"] is not None:
-            g["resolution_times"].append(row["rd"])
+        if rd is not None and not (isinstance(rd, float) and math.isnan(rd)):
+            g["resolution_times"].append(rd)
 
     result = []
     for st, g in groups.items():
@@ -215,10 +276,9 @@ def build_sla_rollup(rows: list[dict], enc: DictEncoder) -> list[dict]:
         med_res = round(median(res_times), 1) if res_times else 0
         p99_res = round(percentile(res_times, 99), 1) if res_times else 0
         pct_resolved = round(g["closed"] / g["total"] * 100, 1)
-        # pct_met_sla denominator is the full request count, not just rows with a due date.
-        # Requests without SERVICEDUEDATE are neither missed nor overdue, so they count as met.
-        # This intentionally matches the city's published methodology.
-        pct_met = round((g["total"] - g["missed_sla_count"] - g["open_past_sla_count"]) / g["total"] * 100, 1)
+        pct_met = round(
+            (g["total"] - g["missed_sla_count"] - g["open_past_sla_count"]) / g["total"] * 100, 1
+        )
         result.append({
             "serviceType": st,
             "category": enc.tables["categories"].index(g["category"]),
@@ -234,7 +294,7 @@ def build_sla_rollup(rows: list[dict], enc: DictEncoder) -> list[dict]:
             "pct_resolved": pct_resolved,
             "pct_met_sla": pct_met,
         })
-    result.sort(key=lambda x: (enc.tables["categories"][x["category"]], x["sla_days"]))
+    result.sort(key=lambda x: (enc.tables["categories"][int(x["category"])], x["sla_days"]))
     return result
 
 
@@ -268,13 +328,32 @@ def build_explorer_rollup(rows: list[dict], enc: DictEncoder) -> dict:
     }
 
 
+def write_shard(month_key: str, group: pd.DataFrame, path: Path) -> None:
+    """Write a monthly shard JSON file using pandas to_json (faster than to_dict)."""
+    rows_json = group.drop(columns="_month").to_json(orient="records")
+    path.write_text(f'{{"month":"{month_key}","rows":{rows_json}}}', encoding="utf-8")
+
+
+def month_rows_for_rollups(group: pd.DataFrame) -> list[dict]:
+    """Convert one month's compact rows to dicts for rollup builders."""
+    g = group.drop(columns="_month")
+    for col in ("st", "w", "c", "ss", "dow", "io", "ic", "ad", "h", "ab", "a", "wk"):
+        if col in g.columns:
+            g[col] = g[col].astype(np.int64)
+    return json.loads(g.to_json(orient="records", date_format="epoch"))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(description="Build dashboard JSON shards from raw CSV.")
     parser.add_argument(
         "--csv",
         type=Path,
         default=None,
-        help="Path to raw service requests CSV (default: 365-day canonical, else 90-day)",
+        help="Path to raw service requests CSV",
     )
     args = parser.parse_args()
     csv_path = (args.csv or DEFAULT_CSV_PATH).resolve()
@@ -285,38 +364,35 @@ def main():
         sys.exit(1)
 
     print(f"Reading {csv_path}")
-    df = pd.read_csv(csv_path, low_memory=False)
-    print(f"  {len(df)} rows")
+    t0 = time.monotonic()
+    df = pd.read_csv(csv_path, usecols=CSV_COLS, low_memory=False)
+    print(f"  {len(df):,} rows ({time.monotonic() - t0:.1f}s)")
 
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    n_raw = len(df)
+    dropped_ward_count = n_raw - int(df["WARD"].isin(WARD_ORDER).sum())
+
     enc = DictEncoder()
     enc.tables["ageBuckets"] = AGE_BUCKETS
 
-    # Process all rows, bucket by month.
-    monthly: dict[str, list[dict]] = defaultdict(list)
-    dropped_ward_count = 0
-    for _, row in df.iterrows():
-        compact, dropped_for_ward = process_row(row, now_ms, enc)
-        if dropped_for_ward:
-            dropped_ward_count += 1
-        if compact is None:
-            continue
-        month_key = datetime.fromtimestamp(compact["a"] / 1000, tz=timezone.utc).strftime("%Y-%m")
-        monthly[month_key].append(compact)
+    print("  Transforming…")
+    t0 = time.monotonic()
+    compact_df = build_compact_df(df, enc)
+    print(f"  {len(compact_df):,} rows after filtering ({time.monotonic() - t0:.1f}s)")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ROLLUP_DIR.mkdir(parents=True, exist_ok=True)
 
     shards = []
     total_rows = 0
-    for month_key in sorted(monthly.keys()):
-        rows = monthly[month_key]
+
+    print("  Writing shards…")
+    t0 = time.monotonic()
+    for month_key, group in compact_df.groupby("_month", sort=True):
+        rows = month_rows_for_rollups(group)
         total_rows += len(rows)
 
         shard_path = f"{month_key}.json"
-        shard_file = OUT_DIR / shard_path
-        with open(shard_file, "w") as f:
-            json.dump({"month": month_key, "rows": rows}, f, separators=(",", ":"))
+        write_shard(month_key, group, OUT_DIR / shard_path)
 
         rollup = {
             "month": month_key,
@@ -336,7 +412,8 @@ def main():
             "minDate": min(add_dates),
             "maxDate": max(add_dates),
         })
-        print(f"  {month_key}: {len(rows)} rows → {shard_path}")
+        print(f"  {month_key}: {len(rows):,} rows → {shard_path}")
+    print(f"  Shards written ({time.monotonic() - t0:.1f}s)")
 
     version = hashlib.sha256(json.dumps(shards, sort_keys=True).encode()).hexdigest()[:12]
     manifest = {
@@ -348,13 +425,12 @@ def main():
         "categoryMap": CATEGORY_MAP,
         "defaults": {"windowDays": 90},
     }
-
     with open(OUT_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 
     if dropped_ward_count:
-        print(f"  Warning: {dropped_ward_count} rows dropped (missing or unrecognized WARD value).")
-    drop_ratio = dropped_ward_count / max(len(df), 1)
+        print(f"  Warning: {dropped_ward_count:,} rows dropped (missing or unrecognized WARD value).")
+    drop_ratio = dropped_ward_count / max(n_raw, 1)
     if drop_ratio > 0.05:
         print(
             f"Error: dropped {dropped_ward_count:,} rows ({drop_ratio:.1%}) for unrecognized WARD. "
@@ -362,7 +438,7 @@ def main():
             file=sys.stderr,
         )
         sys.exit(2)
-    print(f"\nDone. {total_rows} rows across {len(shards)} shards.")
+    print(f"\nDone. {total_rows:,} rows across {len(shards)} shards.")
     print(f"  manifest: {OUT_DIR / 'manifest.json'} (version={version})")
 
 
