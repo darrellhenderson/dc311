@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#171717"/>
+  <rect x="60" y="60" width="1080" height="510" rx="16" fill="#0a0a0a" stroke="#404040" stroke-width="2"/>
+  <text x="100" y="200" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="52" font-weight="700">311: DC&#x2019;s To-Do List</text>
+  <text x="100" y="280" fill="#9ca3af" font-family="Inter, Arial, sans-serif" font-size="32">How often does DC keep its 311 promises?</text>
+  <text x="100" y="400" fill="#2ecc71" font-family="Inter, Arial, sans-serif" font-size="72" font-weight="700">SLA compliance</text>
+  <text x="100" y="460" fill="#6b7280" font-family="Inter, Arial, sans-serif" font-size="28">Open data &#xB7; ~465,000 requests &#xB7; 12-month snapshot</text>
+</svg>

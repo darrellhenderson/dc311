@@ -1,0 +1,27 @@
+# Node / Vite
+dashboard/node_modules/
+dashboard/dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+
+# Local env overrides (never commit; .env.example is tracked and safe to commit)
+.env
+.env.local
+.env.*.local
+
+# Private working notes
+.thoughts/
+
+# Generated data artifacts; rebuild with: python3 data_refresh.py && cd dashboard && npm run build
+# Uncommit existing files with: git rm --cached dashboard/public/data/*.json dashboard/public/data/rollups/*.json data/raw/*.csv data/raw/*.json
+data/raw/*.csv
+data/raw/*.json
+dashboard/public/data/*.json
+dashboard/public/data/rollups/*.json

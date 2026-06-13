@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Inter = UI and headings; Georgia serif = paragraph copy; JetBrains Mono = data. */
+  body {
+    @apply m-0 font-sans bg-surface-muted text-gray-900 antialiased;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-blue-500 ring-offset-2;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #d1d5db #f3f4f6;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #f3f4f6;
+    border-radius: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+
+  .article-prose p:not(.text-caption):not(.sla-month-detail-compact-text):not(.sla-month-detail *),
+  .prose-paragraph {
+    @apply font-serif text-[1.0625rem] leading-[1.7] text-gray-800;
+  }
+
+  .article-prose p:not(.text-caption):not(.sla-month-detail-compact-text):not(.sla-month-detail *) {
+    @apply mb-3 last:mb-0;
+  }
+
+  .article-prose .article-dek {
+    @apply font-serif text-[1.125rem] leading-[1.55] text-gray-600 mb-3;
+  }
+
+  .article-prose .article-headline {
+    @apply font-sans text-display text-gray-900 mb-2 tracking-tight;
+  }
+
+  .article-prose h3 {
+    @apply font-sans font-semibold text-gray-900;
+  }
+
+  .article-prose .article-link {
+    @apply text-gray-900 underline underline-offset-[3px] decoration-gray-400 hover:decoration-gray-900 bg-transparent border-0 p-0 cursor-pointer inline;
+    font: inherit;
+  }
+
+  .article-figure figcaption {
+    @apply font-sans text-caption text-text-muted mt-2 leading-snug;
+  }
+
+  .article-body {
+    display: flow-root;
+  }
+
+  .article-figure-float {
+    @apply my-3 w-full;
+  }
+
+  @media (min-width: 1024px) {
+    .article-figure-float {
+      float: right;
+      clear: right;
+      width: 58%;
+      margin: 0.25rem 0 1.25rem 2rem;
+    }
+
+    .article-figure-float-mid {
+      margin-top: 0.75rem;
+      margin-bottom: 1rem;
+      width: 54%;
+    }
+  }
+
+  .article-figure-float .article-figure-panel {
+    overflow: visible;
+  }
+
+  .sla-cell-active {
+    @apply z-[1] ring-2 ring-gray-900 ring-offset-1 shadow-sm;
+  }
+
+  .sla-month-detail-compact {
+    @apply font-mono mt-2 min-h-[2.375rem] flex items-center rounded border border-border/70 bg-surface-muted/40 px-2.5 py-1.5;
+  }
+
+  .sla-month-detail-compact-text {
+    @apply font-mono text-[11px] sm:text-xs leading-snug text-gray-700 m-0 mb-0;
+  }
+
+  .article-prose .sla-month-detail-compact-text {
+    @apply font-mono text-[11px] sm:text-xs leading-snug text-gray-700 m-0 mb-0;
+  }
+
+  .article-section {
+    @apply bg-surface border border-border rounded-lg px-5 py-4 sm:px-6 sm:py-5 mb-2 w-full;
+  }
+
+  .article-byline {
+    @apply font-sans text-[0.6875rem] leading-snug text-text-muted/90 mb-3;
+  }
+
+  .article-pullquote {
+    @apply font-serif border-l-4 border-amber-400 pl-4 my-4 text-[1.0625rem] leading-[1.65] text-gray-800 italic;
+  }
+
+  .sla-month-detail {
+    @apply mt-2 px-1.5 py-0.5 bg-surface-muted/60 border-l-2 border-border font-mono text-sm leading-tight text-gray-700;
+  }
+
+  .sla-month-detail p {
+    @apply font-mono text-sm leading-tight text-gray-700 m-0 p-0 mb-0;
+  }
+
+  .sla-month-detail p:first-child {
+    @apply font-semibold text-gray-900 mb-0.5;
+  }
+
+  .article-prose .sla-month-detail p {
+    @apply font-mono text-sm leading-tight text-gray-700 m-0 p-0 mb-0;
+  }
+
+  .article-prose .sla-month-detail p:first-child {
+    @apply font-semibold text-gray-900 mb-0.5;
+  }
+}

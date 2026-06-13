@@ -1,0 +1,104 @@
+name: Build and deploy dashboard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Refresh data nightly at 6 AM UTC (2 AM ET).
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate Python pipeline
+        run: python3 -c "import category_rules, query_service_requests, data_refresh; print('Python imports OK')"
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # Cache the raw CSV by date so repeated pushes on the same day skip the ArcGIS fetch.
+      - name: Get current date
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Restore raw data cache
+        id: cache-raw
+        uses: actions/cache@v4
+        with:
+          path: data/raw/service_requests_365days_raw.csv
+          key: raw-data-${{ steps.date.outputs.date }}
+
+      - name: Fetch 365-day service request data
+        if: steps.cache-raw.outputs.cache-hit != 'true'
+        run: python3 query_service_requests.py --days 365
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Lint
+        working-directory: dashboard
+        run: npm run lint
+
+      - name: Test
+        working-directory: dashboard
+        run: npm test
+
+      - name: Build dashboard
+        working-directory: dashboard
+        env:
+          VITE_GITHUB_REPO_URL: ${{ vars.VITE_GITHUB_REPO_URL || format('https://github.com/{0}', github.repository) }}
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('/{0}/', github.event.repository.name) }}
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
