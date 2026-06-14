@@ -101,14 +101,19 @@ export default function CategorySlaTimelines({
               >
                 {row.category}
               </span>
-              <div className="flex gap-px flex-1 min-w-0 h-3.5" role="img" aria-label={`${row.category} monthly SLA compliance`}>
+              <div
+                className="grid gap-px flex-1 min-w-0 h-4 sm:h-3.5 w-full"
+                style={{ gridTemplateColumns: `repeat(${row.months.length}, minmax(0, 1fr))` }}
+                role="img"
+                aria-label={`${row.category} monthly SLA compliance`}
+              >
                 {row.months.map((m) => {
                   const cellActive = rowActive && active?.month === m.month;
                   return (
-                    <div
+                    <button
                       key={m.month}
-                      tabIndex={0}
-                      className={`relative flex-1 min-w-0 rounded-[1px] transition-shadow focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600 ${
+                      type="button"
+                      className={`relative min-w-0 w-full h-full rounded-[1px] border-0 p-0 transition-shadow focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600 ${
                         cellActive ? 'sla-cell-active' : ''
                       }`}
                       style={{ backgroundColor: slaMonthBarColor(m) }}
@@ -128,7 +133,7 @@ export default function CategorySlaTimelines({
                           aria-hidden="true"
                         />
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -177,7 +182,9 @@ export default function CategorySlaTimelines({
         >
           <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: '#e57373' }} />
           <span className="text-text-muted">→</span>
-          <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: '#7b1e1e' }} />
+          <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: colors.dangerDeep }} />
+          <span className="text-text-muted">→</span>
+          <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: colors.primaryDeep }} />
           {' '} &lt;95% below target
         </span>
         <span
