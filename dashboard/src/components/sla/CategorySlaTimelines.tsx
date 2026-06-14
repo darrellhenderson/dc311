@@ -53,14 +53,9 @@ function MonthDetailCompact({ category, month }: { category: string; month: Mont
       <span className="font-semibold tabular-nums">{month.pctMetSla}%</span>
       <span className="text-text-muted"> met SLA · </span>
       <span className="tabular-nums">{month.total.toLocaleString()}</span>
-      <span className="text-text-muted"> requests</span>
-      {month.failures > 0 && (
-        <>
-          <span className="text-text-muted"> · </span>
-          <span className="tabular-nums">{month.failures.toLocaleString()}</span>
-          <span className="text-text-muted"> failures</span>
-        </>
-      )}
+      <span className="text-text-muted"> requests · </span>
+      <span className="tabular-nums">{month.failures.toLocaleString()}</span>
+      <span className="text-text-muted"> failures</span>
       {month.immatureCohort && (
         <span className="text-warning"> · immature cohort</span>
       )}
@@ -82,8 +77,18 @@ export default function CategorySlaTimelines({
     ? categories.find((row) => row.category === active.category)?.months.find((m) => m.month === active.month)
     : null;
 
+  const selectCell = (category: string, month: string) => {
+    setActive({ category, month });
+  };
+
+  const clearActiveUnlessTouch = () => {
+    if (window.matchMedia('(hover: hover)').matches) {
+      setActive(null);
+    }
+  };
+
   return (
-    <div className="font-mono min-w-0" onMouseLeave={() => setActive(null)}>
+    <div className="font-mono min-w-0" onMouseLeave={clearActiveUnlessTouch}>
       <p className="text-caption text-text-muted mb-2">% met SLA by month</p>
       <div className="flex flex-col gap-1">
         {categories.map((row) => {
@@ -109,26 +114,38 @@ export default function CategorySlaTimelines({
               >
                 {row.months.map((m) => {
                   const cellActive = rowActive && active?.month === m.month;
+                  const fill = slaMonthBarColor(m);
                   return (
                     <button
                       key={m.month}
                       type="button"
-                      className={`relative min-w-0 w-full h-full rounded-[1px] border-0 p-0 transition-shadow focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600 ${
+                      className={`relative min-w-0 w-full h-full rounded-[1px] border-0 p-0 overflow-hidden appearance-none touch-manipulation transition-shadow focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600 ${
                         cellActive ? 'sla-cell-active' : ''
                       }`}
-                      style={{ backgroundColor: slaMonthBarColor(m) }}
                       aria-label={
                         m.total > 0
-                          ? `${row.category}, ${m.label}: ${m.pctMetSla}% met SLA, ${m.total.toLocaleString()} requests`
+                          ? `${row.category}, ${m.label}: ${m.pctMetSla}% met SLA, ${m.failures.toLocaleString()} failures, ${m.total.toLocaleString()} requests`
                           : `${row.category}, ${m.label}: no requests`
                       }
-                      onMouseEnter={() => setActive({ category: row.category, month: m.month })}
-                      onFocus={() => setActive({ category: row.category, month: m.month })}
-                      onBlur={() => setActive(null)}
+                      onMouseEnter={() => selectCell(row.category, m.month)}
+                      onClick={() => selectCell(row.category, m.month)}
+                      onFocus={() => selectCell(row.category, m.month)}
+                      onBlur={(e) => {
+                        // Keep selection when moving focus between month cells in the same chart.
+                        if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node | null)) {
+                          setActive(null);
+                        }
+                      }}
                     >
+                      {/* Inner fill span: iOS Safari often skips backgroundColor on small grid buttons. */}
+                      <span
+                        className="absolute inset-0 rounded-[1px]"
+                        style={{ backgroundColor: fill }}
+                        aria-hidden="true"
+                      />
                       {m.immatureCohort && m.total > 0 && (
                         <span
-                          className="absolute top-0 right-0 w-1 h-1 rounded-full border border-gray-600 bg-white"
+                          className="absolute top-0 right-0 z-[1] w-1 h-1 rounded-full border border-gray-600 bg-white"
                           title="Immature cohort: many tickets still in flight. Compliance is provisional."
                           aria-hidden="true"
                         />
@@ -156,7 +173,7 @@ export default function CategorySlaTimelines({
           {active && activeMonth ? (
             <MonthDetailCompact category={active.category} month={activeMonth} />
           ) : (
-            <div className="sla-month-detail-compact-text text-text-muted">Hover a month for details</div>
+            <div className="sla-month-detail-compact-text text-text-muted">Tap or hover a month for details</div>
           )}
         </div>
       )}

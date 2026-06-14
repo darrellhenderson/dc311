@@ -13,7 +13,7 @@ import { plotlyAxisTickFont, plotlyAxisTitleFont } from '../../lib/theme';
 import { slaCategorySummary } from '../../lib/dataProcessing';
 import {
   buildCategoryArticle,
-  computeCategoryMonthlySlaSummary,
+  computeCategoryMonthlySlaFromRollups,
   computeCherryPickSensitivity,
   computeMonthlySlaSummary,
   computeMonthlyThroughput,
@@ -90,14 +90,11 @@ export default function OverviewTab() {
 
   const catSummary = useMemo(() => slaCategorySummary(slaRows), [slaRows]);
 
-  const rows = useMemo(() => dashboardData?.rows ?? [], [dashboardData]);
-
   const categoryMonthly = useMemo(() => {
-    if (rows.length === 0 || slaRows.length === 0) return [];
+    if (!timelineRollups || slaRows.length === 0 || !dicts) return [];
     const eligibleTypes = new Set(slaRows.map((row) => row.SERVICECODEDESCRIPTION));
-    const eligible = rows.filter((row) => eligibleTypes.has(row.SERVICECODEDESCRIPTION));
-    return computeCategoryMonthlySlaSummary(eligible);
-  }, [rows, slaRows]);
+    return computeCategoryMonthlySlaFromRollups(timelineRollups, dicts, eligibleTypes);
+  }, [timelineRollups, slaRows, dicts]);
 
   const perceptibilityChartCategories = useMemo(
     () => selectPerceptibilityChartCategories(catSummary),

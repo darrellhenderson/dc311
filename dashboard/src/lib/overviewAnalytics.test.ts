@@ -3,6 +3,7 @@ import {
   buildCategoryArticle,
   computeCherryPickSensitivity,
   computeCategoryMonthlySlaSummary,
+  computeCategoryMonthlySlaFromRollups,
   computeMonthlySlaSummary,
   computeOverviewHeadline,
   findSloPitfalls,
@@ -142,6 +143,59 @@ describe('computeMonthlySlaSummary', () => {
     expect(months[0].pctMetSla).toBe(97);
     expect(months[0].immatureCohort).toBe(false);
     expect(months[1].immatureCohort).toBe(true);
+  });
+});
+
+describe('computeCategoryMonthlySlaFromRollups', () => {
+  it('aggregates filing-month SLA compliance by category from rollups', () => {
+    const dicts = {
+      serviceTypes: ['Pothole', 'Bus stop'],
+      categories: ['Roads & Vehicle Infrastructure', 'Transit'],
+      agencies: ['DDOT'],
+      statuses: [],
+      wards: [],
+      dayOfWeek: [],
+      ageBuckets: [],
+      zipcodes: [],
+      cities: [],
+      states: [],
+      serviceTypeCodes: [],
+      serviceCodes: [],
+      priorities: [],
+    };
+
+    const rows = computeCategoryMonthlySlaFromRollups([
+      {
+        month: '2025-06',
+        sla: [{
+          serviceType: 0,
+          category: 0,
+          agency: 0,
+          sla_days: 7,
+          total: 10,
+          closed: 8,
+          met_sla_count: 8,
+          missed_sla_count: 2,
+          open_past_sla_count: 0,
+          median_resolution: 3,
+          p99_resolution: 10,
+          pct_resolved: 80,
+          pct_met_sla: 80,
+        }],
+        explorer: {
+          categoryBreakdown: [{ c: 0, open: 2, resolved: 8 }],
+          dayOfWeek: [],
+          wardVolume: [],
+          typeCounts: [],
+          weeklyVolume: [],
+        },
+      },
+    ], dicts, new Set(['Pothole']));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].category).toBe('Roads & Vehicle Infrastructure');
+    expect(rows[0].months[0].pctMetSla).toBe(80);
+    expect(rows[0].months[0].failures).toBe(2);
   });
 });
 

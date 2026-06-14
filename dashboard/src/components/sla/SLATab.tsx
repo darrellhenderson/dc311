@@ -24,7 +24,7 @@ import SectionCard from '../shared/SectionCard';
 import SlaFilterBar from '../shared/filters/SlaFilterBar';
 import StatusBadge, { slaMetBadge } from '../shared/StatusBadge';
 import { slaCategorySummaryChart, slaCategoryVolumeMarkerSize, slaFailuresChart, slaResolutionByTypeChart, slaStatusMapChart } from '../../lib/charts';
-import { computeCategoryMonthlySlaSummary, slaScoreColor } from '../../lib/overviewAnalytics';
+import { computeCategoryMonthlySlaSummary, computeCategoryMonthlySlaFromRollups, slaScoreColor } from '../../lib/overviewAnalytics';
 import CategorySlaTimelines from './CategorySlaTimelines';
 
 type SlaRow = ReturnType<typeof slaTableData>[number];
@@ -63,13 +63,17 @@ export default function SLATab() {
 
   const categoryMonthly = useMemo(() => {
     const eligibleTypes = new Set(slaData.map((row) => row.SERVICECODEDESCRIPTION));
-    const eligible = filteredProcessed.filter((row) => eligibleTypes.has(row.SERVICECODEDESCRIPTION));
-    const byCategory = computeCategoryMonthlySlaSummary(eligible);
+    const dicts = dashboardData?.manifest.dictionaries;
+    const byCategory = useRollups && dashboardData?.monthlyRollups && dicts
+      ? computeCategoryMonthlySlaFromRollups(dashboardData.monthlyRollups, dicts, eligibleTypes)
+      : computeCategoryMonthlySlaSummary(
+          filteredProcessed.filter((row) => eligibleTypes.has(row.SERVICECODEDESCRIPTION)),
+        );
     const order = new Map(catSummary.map((c, i) => [c.category, i]));
     return byCategory
       .filter((row) => order.has(row.category))
       .sort((a, b) => (order.get(a.category) ?? 0) - (order.get(b.category) ?? 0));
-  }, [filteredProcessed, slaData, catSummary]);
+  }, [filteredProcessed, slaData, catSummary, useRollups, dashboardData?.monthlyRollups, dashboardData?.manifest.dictionaries]);
 
   const kpis = useMemo(() => {
     const totalReqs = slaData.reduce((sum, row) => sum + row.total, 0);

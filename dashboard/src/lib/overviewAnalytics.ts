@@ -236,6 +236,16 @@ interface MonthCategoryBucket {
   resolved: number;
 }
 
+const EMPTY_MONTH_BUCKET: MonthCategoryBucket = {
+  total: 0,
+  closed: 0,
+  met: 0,
+  missed: 0,
+  overdue: 0,
+  open: 0,
+  resolved: 0,
+};
+
 function filingMonthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
@@ -320,16 +330,56 @@ export function computeCategoryMonthlySlaSummary(requests: ProcessedRequest[]): 
     category,
     months: allMonths.map((month) => {
       const agg = buckets.get(`${month}|${category}`);
-      return bucketFromAgg(month, agg ?? {
-        total: 0,
-        closed: 0,
-        met: 0,
-        missed: 0,
-        overdue: 0,
-        open: 0,
-        resolved: 0,
-      });
+      return bucketFromAgg(month, agg ?? EMPTY_MONTH_BUCKET);
     }),
+  }));
+}
+
+/** Per filing-month SLA by category from monthly rollups (matches the timeline data source). */
+export function computeCategoryMonthlySlaFromRollups(
+  rollups: RollupFile[],
+  dicts: DataDictionaries,
+  eligibleServiceTypes?: Set<string>,
+): CategoryMonthlySla[] {
+  const buckets = new Map<string, MonthCategoryBucket>();
+  const categorySet = new Set<string>();
+
+  for (const file of rollups) {
+    const month = file.month;
+
+    for (const row of file.sla) {
+      const serviceType = dicts.serviceTypes[row.serviceType];
+      if (eligibleServiceTypes && !eligibleServiceTypes.has(serviceType)) continue;
+
+      const category = dicts.categories[row.category];
+      categorySet.add(category);
+      const key = `${month}|${category}`;
+      if (!buckets.has(key)) {
+        buckets.set(key, { ...EMPTY_MONTH_BUCKET });
+      }
+      const bucket = buckets.get(key)!;
+      bucket.total += row.total;
+      bucket.closed += row.closed;
+      bucket.met += row.met_sla_count;
+      bucket.missed += row.missed_sla_count;
+      bucket.overdue += row.open_past_sla_count;
+    }
+
+    for (const row of file.explorer.categoryBreakdown) {
+      const category = dicts.categories[row.c];
+      const bucket = buckets.get(`${month}|${category}`);
+      if (!bucket) continue;
+      bucket.open = row.open;
+      bucket.resolved = row.resolved;
+    }
+  }
+
+  const allMonths = [...rollups].map((file) => file.month).sort((a, b) => a.localeCompare(b));
+  const categories = [...categorySet].sort((a, b) => a.localeCompare(b));
+
+  return categories.map((category) => ({
+    category,
+    months: allMonths.map((month) => bucketFromAgg(month, buckets.get(`${month}|${category}`) ?? EMPTY_MONTH_BUCKET)),
   }));
 }
 
