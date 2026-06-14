@@ -1,8 +1,19 @@
-import React, { Suspense, useMemo } from 'react';
+import React, { Suspense, useMemo, type ComponentType } from 'react';
 import type { Data } from 'plotly.js';
 import { mergePlotlyLayout } from './plotlyLayout';
 
-const Plot = React.lazy(() => import('react-plotly.js'));
+/** Vite 8 may resolve the CJS default to the module wrapper instead of the component. */
+async function loadReactPlotly() {
+  const mod = await import('react-plotly.js');
+  const candidate = (mod.default ?? mod) as ComponentType<unknown> | { default: ComponentType<unknown> };
+  const Component =
+    typeof candidate === 'object' && candidate !== null && 'default' in candidate
+      ? candidate.default
+      : candidate;
+  return { default: Component };
+}
+
+const Plot = React.lazy(loadReactPlotly);
 
 interface PlotlyChartProps {
   data: Data[];
