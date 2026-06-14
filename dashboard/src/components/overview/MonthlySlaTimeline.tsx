@@ -104,6 +104,8 @@ export default function MonthlySlaTimeline({ months }: MonthlySlaTimelineProps) 
         >
           <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.danger }} />
           <span aria-hidden="true">→</span>
+          <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.dangerDeep }} />
+          <span aria-hidden="true">→</span>
           <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.primaryDeep }} />
           &lt;95% below target
         </span>
