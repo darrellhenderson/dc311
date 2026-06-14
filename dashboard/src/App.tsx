@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { Suspense, lazy, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchDashboardData } from './api/data';
 import { DateRangePreset } from './api/dataTypes';
 import AboutPanel from './components/shell/AboutPanel';
@@ -7,6 +7,7 @@ import AppFooter from './components/shell/AppFooter';
 import AppHeader from './components/shell/AppHeader';
 import TabNav from './components/shell/TabNav';
 import { DashboardProvider } from './context/DashboardContext';
+import { trackAboutOpen, trackEvent } from './lib/analytics';
 
 const OverviewTab = lazy(() => import('./components/overview/OverviewTab'));
 const SLATab = lazy(() => import('./components/sla/SLATab'));
@@ -32,16 +33,52 @@ function TabFallback() {
   );
 }
 
+type TabId = 'overview' | 'sla' | 'explorer' | 'raw';
+
 function DashboardShell() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'sla' | 'explorer' | 'raw'>('overview');
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [datePreset, setDatePreset] = useState<DateRangePreset>('full');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number; currentShard: string } | null>(null);
+
+  const handleTabChange = useCallback((tab: TabId) => {
+    setActiveTab((current) => {
+      if (current === tab) {
+        return current;
+      }
+      trackEvent('tab_view', { tab });
+      return tab;
+    });
+  }, []);
+
+  const handleDatePresetChange = useCallback((preset: DateRangePreset) => {
+    setDatePreset((current) => {
+      if (current === preset) {
+        return current;
+      }
+      trackEvent('date_range_change', { preset });
+      return preset;
+    });
+  }, []);
 
   const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ['dashboardData', datePreset],
     queryFn: () => fetchDashboardData(datePreset, setLoadProgress),
   });
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    trackEvent('data_load_error', {
+      message: (error as Error).message.slice(0, 100),
+    });
+  }, [error]);
+
+  const handleAboutOpen = useCallback(() => {
+    setAboutOpen(true);
+    trackAboutOpen();
+  }, []);
 
   const isLoadingRows = activeTab === 'raw' && (isLoading || isFetching);
 
@@ -60,12 +97,12 @@ function DashboardShell() {
       isLoadingRows,
       error: error as Error | null,
       datePreset,
-      setDatePreset,
+      setDatePreset: handleDatePresetChange,
       loadProgress,
       activeTab,
-      setActiveTab,
+      setActiveTab: handleTabChange,
     }),
-    [data, isLoading, isLoadingRows, error, datePreset, loadProgress, activeTab],
+    [data, isLoading, isLoadingRows, error, datePreset, loadProgress, activeTab, handleDatePresetChange, handleTabChange],
   );
 
   if (error) {
@@ -92,7 +129,7 @@ function DashboardShell() {
           loadProgress={loadProgress}
         />
 
-        <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
+        <TabNav activeTab={activeTab} onTabChange={handleTabChange} />
 
         <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-3">
           {isLoading ? (
@@ -110,7 +147,7 @@ function DashboardShell() {
           )}
         </main>
 
-        <AppFooter onAboutClick={() => setAboutOpen(true)} />
+        <AppFooter onAboutClick={handleAboutOpen} />
 
         <AboutPanel
           open={aboutOpen}

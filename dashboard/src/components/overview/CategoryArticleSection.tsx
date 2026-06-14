@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { ArticlePart, CategoryArticle } from '../../lib/overviewAnalytics';
+import { useTrackArticleView } from '../../hooks/useTrackArticleView';
 import ChartPanel from '../shared/ChartPanel';
 import PlotlyChart from '../shared/PlotlyChart';
 
@@ -10,6 +11,7 @@ interface CategoryArticleSectionProps {
   chartRemountKey: string;
   onNavigate: (tab: 'sla' | 'explorer') => void;
   embedded?: boolean;
+  trackId?: string;
 }
 
 function renderPart(part: ArticlePart, onNavigate: CategoryArticleSectionProps['onNavigate']): ReactNode {
@@ -49,9 +51,15 @@ export default function CategoryArticleSection({
   chartRemountKey,
   onNavigate,
   embedded = false,
+  trackId,
 }: CategoryArticleSectionProps) {
+  const ref = useTrackArticleView(trackId ?? '');
+
   return (
-    <article className={`article-prose w-full ${embedded ? 'px-0 py-4 sm:py-5' : 'border-t border-border pt-4 mt-4'}`}>
+    <article
+      ref={trackId ? ref : undefined}
+      className={`article-prose w-full ${embedded ? 'px-0 py-4 sm:py-5' : 'border-t border-border pt-4 mt-4'}`}
+    >
       <header>
         <h2 className="article-headline">{article.headline}</h2>
         <p className="article-dek">{article.dek}</p>

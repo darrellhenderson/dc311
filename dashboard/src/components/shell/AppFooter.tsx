@@ -1,4 +1,5 @@
 import { GITHUB_REPO_URL } from '../../lib/site';
+import { trackOutboundClick } from '../../lib/analytics';
 
 const DC311_DATA_URL =
   'https://opendata.dc.gov/datasets/DCGIS::all-311-city-service-requests-last-30-days/about';
@@ -35,6 +36,7 @@ export default function AppFooter({ onAboutClick }: AppFooterProps) {
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-neutral-300 underline-offset-2 hover:underline"
+            onClick={() => trackOutboundClick('source_data')}
           >
             DC Open Data 311 Service Requests
           </a>
@@ -44,6 +46,7 @@ export default function AppFooter({ onAboutClick }: AppFooterProps) {
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-neutral-300 underline-offset-2 hover:underline"
+            onClick={() => trackOutboundClick('cc_by')}
           >
             CC BY 4.0
           </a>
@@ -55,6 +58,7 @@ export default function AppFooter({ onAboutClick }: AppFooterProps) {
             rel="noopener noreferrer"
             className="text-neutral-500 hover:text-neutral-100 transition-colors"
             aria-label="View source on GitHub"
+            onClick={() => GITHUB_REPO_URL && trackOutboundClick('github_repo')}
           >
             <GitHubIcon />
           </a>

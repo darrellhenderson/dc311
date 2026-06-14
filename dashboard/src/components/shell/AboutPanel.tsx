@@ -6,6 +6,7 @@ import {
   GITHUB_REPO_URL,
   LINKEDIN_URL,
 } from '../../lib/site';
+import { OutboundLink, trackOutboundClick } from '../../lib/analytics';
 
 const DC311_DATA_URL =
   'https://opendata.dc.gov/datasets/DCGIS::all-311-city-service-requests-last-30-days/about';
@@ -22,13 +23,24 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PillLink({ href, icon, children }: { href: string; icon: string; children: React.ReactNode }) {
+function PillLink({
+  href,
+  icon,
+  children,
+  linkId,
+}: {
+  href: string;
+  icon: string;
+  children: React.ReactNode;
+  linkId: OutboundLink;
+}) {
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
       className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-gray-200 text-sm text-gray-700 hover:border-gray-400 hover:text-gray-900 transition-colors"
+      onClick={() => trackOutboundClick(linkId)}
     >
       <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">
         <path d={icon} />
@@ -112,10 +124,10 @@ export default function AboutPanel({ open, builtAt, onClose }: AboutPanelProps) 
               {builtAt && <span className="text-gray-400"> Snapshot built {builtAt}.</span>}
             </p>
             <div className="flex flex-wrap gap-2">
-              <PillLink href={DC311_DATA_URL} icon="M9.5 0a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5H8v1h5.5A1.5 1.5 0 0 1 15 4.5v9a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-9A1.5 1.5 0 0 1 2.5 3H8V2H6.5a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-1 6.5a.5.5 0 0 0-1 0v3.793L6.146 8.94a.5.5 0 1 0-.707.707l2.5 2.5a.5.5 0 0 0 .707 0l2.5-2.5a.5.5 0 0 0-.707-.707L9.5 10.293V6.5z">
+              <PillLink href={DC311_DATA_URL} linkId="source_data" icon="M9.5 0a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5H8v1h5.5A1.5 1.5 0 0 1 15 4.5v9a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-9A1.5 1.5 0 0 1 2.5 3H8V2H6.5a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-1 6.5a.5.5 0 0 0-1 0v3.793L6.146 8.94a.5.5 0 1 0-.707.707l2.5 2.5a.5.5 0 0 0 .707 0l2.5-2.5a.5.5 0 0 0-.707-.707L9.5 10.293V6.5z">
                 DC Open Data
               </PillLink>
-              <PillLink href={CC_BY_URL} icon="M4.475 5.458c-.284 0-.514.237-.47.517C4.28 7.575 5.806 9 8 9c2.193 0 3.792-1.425 3.994-3.025.044-.28-.186-.517-.47-.517H4.475zm4.151 1.844c-.184 1.043-.98 1.76-2.89 1.76-.908 0-1.727-.343-2.25-.873a2.5 2.5 0 0 1 0-3.554c.523-.53 1.342-.873 2.25-.873 1.91 0 2.706.717 2.89 1.76H4.475a.5.5 0 0 0 0 1h4.151zM8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1z">
+              <PillLink href={CC_BY_URL} linkId="cc_by" icon="M4.475 5.458c-.284 0-.514.237-.47.517C4.28 7.575 5.806 9 8 9c2.193 0 3.792-1.425 3.994-3.025.044-.28-.186-.517-.47-.517H4.475zm4.151 1.844c-.184 1.043-.98 1.76-2.89 1.76-.908 0-1.727-.343-2.25-.873a2.5 2.5 0 0 1 0-3.554c.523-.53 1.342-.873 2.25-.873 1.91 0 2.706.717 2.89 1.76H4.475a.5.5 0 0 0 0 1h4.151zM8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1z">
                 CC BY 4.0
               </PillLink>
             </div>
@@ -136,7 +148,7 @@ export default function AboutPanel({ open, builtAt, onClose }: AboutPanelProps) 
               no database. Static files on GitHub Pages.
             </p>
             {GITHUB_REPO_URL && (
-              <PillLink href={GITHUB_REPO_URL} icon={GH_PATH}>
+              <PillLink href={GITHUB_REPO_URL} linkId="github_repo" icon={GH_PATH}>
                 View source
               </PillLink>
             )}
@@ -164,12 +176,12 @@ export default function AboutPanel({ open, builtAt, onClose }: AboutPanelProps) 
             </div>
             <div className="flex flex-wrap gap-2">
               {GITHUB_PROFILE_URL && (
-                <PillLink href={GITHUB_PROFILE_URL} icon={GH_PATH}>
+                <PillLink href={GITHUB_PROFILE_URL} linkId="github_profile" icon={GH_PATH}>
                   GitHub
                 </PillLink>
               )}
               {LINKEDIN_URL && (
-                <PillLink href={LINKEDIN_URL} icon={LI_PATH}>
+                <PillLink href={LINKEDIN_URL} linkId="linkedin" icon={LI_PATH}>
                   LinkedIn
                 </PillLink>
               )}

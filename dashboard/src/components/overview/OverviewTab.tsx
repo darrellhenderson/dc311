@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRollupTimeline } from '../../api/data';
 import { useDashboard } from '../../context/DashboardContext';
+import { useTrackArticleView } from '../../hooks/useTrackArticleView';
 import { useIsDesktop, useIsMobile } from '../../hooks/useBreakpoint';
 import {
   capChartHeight,
@@ -49,6 +50,8 @@ export default function OverviewTab() {
   } = useDashboard();
   const isBentoWide = useIsDesktop();
   const isMobile = useIsMobile();
+  const throughputSectionRef = useTrackArticleView('throughput');
+  const readingMetricsSectionRef = useTrackArticleView('reading_metrics');
 
   // Overview always uses the full-year timeline regardless of the active preset.
   // Use already-loaded rollups when all shards are present; otherwise fetch the full set.
@@ -283,7 +286,7 @@ export default function OverviewTab() {
         onNavigate={handleTabNavigate}
       />
 
-      <section className="article-section article-prose">
+      <section ref={throughputSectionRef} className="article-section article-prose">
         <h2 className="article-headline">The weight of half a million requests</h2>
         <p className="article-dek">
           {headline.total.toLocaleString()} requests filed in twelve months. {headline.open.toLocaleString()} still open.
@@ -316,11 +319,12 @@ export default function OverviewTab() {
             chartRemountKey={isBentoWide ? 'wide' : 'stacked'}
             onNavigate={handleTabNavigate}
             embedded
+            trackId="category_breakdown"
           />
         </div>
       </DeferredChart>
 
-      <section className="article-section article-prose">
+      <section ref={readingMetricsSectionRef} className="article-section article-prose">
         <h2 className="article-headline">Reading the metrics</h2>
         <p className="article-dek">
           What gets measured, what doesn&apos;t, and where the numbers mislead.

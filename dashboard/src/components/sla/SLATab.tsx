@@ -1,9 +1,10 @@
-import { useState, useMemo, ReactNode } from 'react';
+import { useState, useMemo, useCallback, ReactNode } from 'react';
 import type { Data } from 'plotly.js';
 import { useDashboard } from '../../context/DashboardContext';
 import { slaTableData, slaCategorySummary } from '../../lib/dataProcessing';
 import { hasSlaFilters } from '../../lib/rollups';
-import { EMPTY_SLA_FILTERS, filterSlaRows } from '../../lib/filterTypes';
+import { EMPTY_SLA_FILTERS, filterSlaRows, SlaFilterState, summarizeSlaFilterDimensions } from '../../lib/filterTypes';
+import { trackFilterChange } from '../../lib/analytics';
 import { useIsMobile, useIsDesktop } from '../../hooks/useBreakpoint';
 import {
   capChartHeight,
@@ -45,6 +46,17 @@ export default function SLATab() {
   const [filters, setFilters] = useState(EMPTY_SLA_FILTERS);
   const [slaPage, setSlaPage] = useState(0);
   const slaPageSize = 25;
+
+  const handleFilterChange = useCallback((next: SlaFilterState) => {
+    setFilters((prev) => {
+      trackFilterChange(
+        'sla',
+        summarizeSlaFilterDimensions(prev),
+        summarizeSlaFilterDimensions(next),
+      );
+      return next;
+    });
+  }, []);
 
   const filteredProcessed = useMemo(() => {
     if (!processed || processed.length === 0) return [];
@@ -228,7 +240,7 @@ export default function SLATab() {
         % Met SLA = (total − resolved late − open & overdue) ÷ total
       </p>
 
-      <SlaFilterBar rows={processed} filters={filters} onChange={setFilters} />
+      <SlaFilterBar rows={processed} filters={filters} onChange={handleFilterChange} />
 
       <SectionCard
         title="Overview"

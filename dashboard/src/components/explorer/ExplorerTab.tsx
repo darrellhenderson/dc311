@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import type { Data } from 'plotly.js';
 import { useDashboard } from '../../context/DashboardContext';
-import { filterExplorerRows, EMPTY_EXPLORER_FILTERS, ExplorerFilterState } from '../../lib/filterTypes';
+import { filterExplorerRows, EMPTY_EXPLORER_FILTERS, ExplorerFilterState, summarizeExplorerFilterDimensions } from '../../lib/filterTypes';
+import { trackFilterChange } from '../../lib/analytics';
 import { useIsMobile, useIsDesktop } from '../../hooks/useBreakpoint';
 import {
   capChartHeight,
@@ -47,6 +48,17 @@ export default function ExplorerTab() {
   const processed = dashboardData?.rows;
   const isMobile = useIsMobile();
   const isBentoWide = useIsDesktop();
+
+  const handleFilterChange = useCallback((next: ExplorerFilterState) => {
+    setFilters((prev) => {
+      trackFilterChange(
+        'explorer',
+        summarizeExplorerFilterDimensions(prev),
+        summarizeExplorerFilterDimensions(next),
+      );
+      return next;
+    });
+  }, []);
 
   const filtered = useMemo(() => {
     if (!processed) return [];
@@ -168,7 +180,7 @@ export default function ExplorerTab() {
       <ExplorerFilterBar
         rows={processed}
         filters={filters}
-        onChange={setFilters}
+        onChange={handleFilterChange}
       />
 
       <SectionCard title="Overview" subtitle={`${total.toLocaleString()} matching requests`} defaultOpen>
