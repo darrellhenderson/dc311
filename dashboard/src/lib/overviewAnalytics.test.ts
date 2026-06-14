@@ -125,8 +125,9 @@ describe('slaScoreColor', () => {
     expect(slaScoreColor(99)).toBe(colors.success);
     expect(slaScoreColor(95)).toBe(colors.warning);
     expect(slaScoreColor(94.9)).toBe(colors.danger);
-    expect(slaScoreColor(50)).toBe(colors.primaryDeep);
+    expect(slaScoreColor(50)).toBe('#4e1e19');
     expect(slaScoreColor(30)).toBe(colors.primaryDeep);
+    expect(slaScoreColor(20)).toBe(colors.primaryDeep);
   });
 });
 

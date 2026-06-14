@@ -16,6 +16,8 @@ export const colors = {
   success: '#2ecc71',
   warning: '#e67e22',
   danger: '#e74c3c',
+  /** Mid-dark red for SLA legend swatches (between danger and primaryDeep). */
+  dangerDeep: '#7b1e1e',
 } as const;
 
 /** Categorical series colors aligned with the dashboard palette. */

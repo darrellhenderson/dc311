@@ -11,7 +11,7 @@ export interface CategoryMonthlySla {
   months: MonthlySlaSummary[];
 }
 
-const BELOW_TARGET_FLOOR = 50; // Anything below 50% saturates to "critical" red.
+const BELOW_TARGET_FLOOR = 30; // At or below 30% saturates to near-black.
 
 function mixHex(light: string, dark: string, amount: number): string {
   const parse = (hex: string) => {
@@ -28,7 +28,7 @@ function mixHex(light: string, dark: string, amount: number): string {
   return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
 }
 
-/** Fill color for an SLA score; below 95% darkens from danger red toward near-black at 50%. */
+/** Fill color for an SLA score; below 95% darkens from danger red toward near-black at 30%. */
 export function slaScoreColor(pctMetSla: number): string {
   if (pctMetSla >= 99) return colors.success;
   if (pctMetSla >= 95) return colors.warning;
