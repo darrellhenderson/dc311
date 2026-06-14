@@ -51,7 +51,7 @@ export default function MonthlySlaTimeline({ months }: MonthlySlaTimelineProps) 
             {m.immatureCohort && (
               <span
                 className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full border border-gray-600 bg-white"
-                title="Immature cohort: many tickets still in flight. Compliance is provisional."
+                title="Within SLA window: compliance may still shift as deadlines pass."
                 aria-hidden="true"
               />
             )}
@@ -76,8 +76,9 @@ export default function MonthlySlaTimeline({ months }: MonthlySlaTimelineProps) 
             <p><span className="text-text-muted">Known failures:</span> {m.failures.toLocaleString()}</p>
             <p><span className="text-text-muted">Open:</span> {m.open.toLocaleString()} · <span className="text-text-muted">Resolved:</span> {m.resolved.toLocaleString()}</p>
             <p><span className="text-text-muted">% Resolved:</span> {m.pctResolved}%</p>
+            <p><span className="text-text-muted">Closed or past SLA deadline:</span> {m.pctSlaOutcomeKnown}%</p>
             {m.immatureCohort && (
-              <p className="text-warning">Immature cohort: many tickets still in flight. Compliance is provisional.</p>
+              <p className="text-warning">Within SLA window: compliance may still shift as deadlines pass.</p>
             )}
           </div>
         );
@@ -111,10 +112,10 @@ export default function MonthlySlaTimeline({ months }: MonthlySlaTimelineProps) 
         </span>
         <span
           className="inline-flex items-center gap-1"
-          title="More than 30% of tickets filed this month are still open. Compliance will change as tickets close."
+          title="Less than 99% of tickets are closed or past their SLA deadline. Compliance may still shift."
         >
           <span className="w-2 h-2 rounded-full border border-gray-400 bg-white shrink-0" />
-          immature cohort
+          within SLA window
         </span>
       </p>
     </div>

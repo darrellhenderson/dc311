@@ -7,9 +7,12 @@ import {
   computeMonthlySlaSummary,
   computeOverviewHeadline,
   findSloPitfalls,
+  isImmatureCohort,
   orderCategoryMonthlySla,
+  pctSlaOutcomeKnown,
   selectComplianceComparisonCases,
   selectPerceptibilityChartCategories,
+  slaOutcomeKnownLabel,
   slaVerdictLabel,
   slaScoreColor,
   slaTone,
@@ -138,16 +141,30 @@ describe('slaScoreColor', () => {
   });
 });
 
+describe('pctSlaOutcomeKnown', () => {
+  it('counts closed tickets and open past deadline as knowable', () => {
+    expect(pctSlaOutcomeKnown(100, 70, 10, 5)).toBe(85);
+    expect(slaOutcomeKnownLabel(85)).toBe('85% closed or past SLA deadline');
+  });
+
+  it('flags provisional cohorts below 99%', () => {
+    expect(isImmatureCohort(100, 96, 2, 1)).toBe(false);
+    expect(isImmatureCohort(100, 70, 10, 5)).toBe(true);
+  });
+});
+
 describe('computeMonthlySlaSummary', () => {
-  it('aggregates per-month compliance and flags immature cohorts', () => {
+  it('aggregates per-month compliance and flags provisional cohorts', () => {
     const months = computeMonthlySlaSummary([
-      mockRollup('2025-06', { total: 100, missed: 2, overdue: 1, open: 10, resolved: 90 }),
-      mockRollup('2025-07', { total: 100, missed: 10, overdue: 5, open: 50, resolved: 50 }),
+      mockRollup('2025-06', { total: 100, met: 96, missed: 2, overdue: 1, open: 10, resolved: 90 }),
+      mockRollup('2025-07', { total: 100, met: 45, missed: 10, overdue: 5, open: 50, resolved: 50 }),
     ]);
 
     expect(months).toHaveLength(2);
     expect(months[0].pctMetSla).toBe(97);
+    expect(months[0].pctSlaOutcomeKnown).toBe(99);
     expect(months[0].immatureCohort).toBe(false);
+    expect(months[1].pctSlaOutcomeKnown).toBe(60);
     expect(months[1].immatureCohort).toBe(true);
   });
 });

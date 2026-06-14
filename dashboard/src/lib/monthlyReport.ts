@@ -1,6 +1,6 @@
 import { DataDictionaries, DataShardMeta, RollupFile } from '../api/dataTypes';
 import { ProcessedRequest } from './dataProcessing';
-import { slaTone } from './overviewAnalytics';
+import { isImmatureCohort, pctSlaOutcomeKnown, slaOutcomeKnownLabel, SLA_OUTCOME_KNOWN_THRESHOLD, slaTone, slaVerdictLabel } from './overviewAnalytics';
 import { mergeSlaRollups } from './rollups';
 
 export interface DeltaValue {
@@ -13,10 +13,12 @@ export interface MonthlyScorecard {
   month: string;
   label: string;
   pctMetSla: number;
+  pctMetSlaClosedOnly: number;
   totalFiled: number;
   totalResolved: number;
   medianResolutionDays: number;
   netBacklogChange: number;
+  immatureCohort: boolean;
   deltas: {
     pctMetSla: DeltaValue | null;
     totalFiled: DeltaValue | null;
@@ -64,14 +66,42 @@ export interface VolumeSummary {
   weeklyTotals: Array<{ week: string; count: number }>;
 }
 
+export interface CohortDispositionBucket {
+  key: 'met' | 'missed' | 'open_within' | 'open_overdue' | 'no_sla';
+  label: string;
+  count: number;
+  color: string;
+}
+
+export interface CohortSettling {
+  total: number;
+  buckets: CohortDispositionBucket[];
+  pctClosed: number;
+  pctOpenWithin: number;
+  pctSlaOutcomeKnown: number;
+  pctMetSla: number;
+  pctMetSlaClosedOnly: number;
+  stableAfterLabel: string | null;
+  summaryLine: string;
+  slaComparisonLine: string;
+  slaOutcomeKnownLine: string;
+}
+
+export interface CumulativeResolutionCurve {
+  days: number[];
+  pctClosed: number[];
+}
+
 interface MonthAgg {
   total: number;
   closed: number;
+  met: number;
   missed: number;
   overdue: number;
   open: number;
   resolved: number;
   pctMetSla: number;
+  pctMetSlaClosedOnly: number;
   medianResolution: number;
 }
 
@@ -87,6 +117,7 @@ function monthLabel(month: string): string {
 function aggregateMonth(file: RollupFile, _dicts: DataDictionaries): MonthAgg {
   let total = 0;
   let closed = 0;
+  let met = 0;
   let missed = 0;
   let overdue = 0;
   let medSum = 0;
@@ -94,6 +125,7 @@ function aggregateMonth(file: RollupFile, _dicts: DataDictionaries): MonthAgg {
   for (const row of file.sla) {
     total += row.total;
     closed += row.closed;
+    met += row.met_sla_count;
     missed += row.missed_sla_count;
     overdue += row.open_past_sla_count;
     medSum += row.median_resolution * row.closed;
@@ -108,9 +140,10 @@ function aggregateMonth(file: RollupFile, _dicts: DataDictionaries): MonthAgg {
 
   const failures = missed + overdue;
   const pctMetSla = total > 0 ? round1(((total - failures) / total) * 100) : 0;
+  const pctMetSlaClosedOnly = closed > 0 ? round1((met / closed) * 100) : 0;
   const medianResolution = closed > 0 ? round1(medSum / closed) : 0;
 
-  return { total, closed, missed, overdue, open, resolved, pctMetSla, medianResolution };
+  return { total, closed, met, missed, overdue, open, resolved, pctMetSla, pctMetSlaClosedOnly, medianResolution };
 }
 
 function makeDelta(current: number, previous: number | null, opts?: { suffix?: string; isPercent?: boolean }): DeltaValue | null {
@@ -174,10 +207,12 @@ export function computeMonthlyScorecard(
     month: current.month,
     label: monthLabel(current.month),
     pctMetSla: cur.pctMetSla,
+    pctMetSlaClosedOnly: cur.pctMetSlaClosedOnly,
     totalFiled: cur.total,
     totalResolved: cur.resolved,
     medianResolutionDays: cur.medianResolution,
     netBacklogChange: cur.total - cur.resolved,
+    immatureCohort: isImmatureCohort(cur.total, cur.met, cur.missed, cur.overdue),
     deltas: {
       pctMetSla: prevAgg ? makeDelta(cur.pctMetSla, prevAgg.pctMetSla, { suffix: ' pts' }) : null,
       totalFiled: prevAgg ? makeDelta(cur.total, prevAgg.total) : null,
@@ -379,25 +414,202 @@ export function computeVolumeSummary(
   return { topServiceTypes, weeklyTotals };
 }
 
+/** SLA status colors aligned with the SLA status map. */
+const DISPOSITION_COLORS: Record<CohortDispositionBucket['key'], string> = {
+  met: '#2ecc71',
+  missed: '#e74c3c',
+  open_within: '#f39c12',
+  open_overdue: '#c0392b',
+  no_sla: '#95a5a6',
+};
+
+const DISPOSITION_LABELS: Record<CohortDispositionBucket['key'], string> = {
+  met: 'Resolved on time',
+  missed: 'Resolved late',
+  open_within: 'Open within SLA',
+  open_overdue: 'Open overdue',
+  no_sla: 'No SLA defined',
+};
+
+function filingMonthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** Weighted percentile of SLA deadlines across service types in a filing month. */
+function weightedSlaPercentile(rollup: RollupFile, pct: number): number {
+  const eligible = rollup.sla.filter((r) => r.sla_days > 0 && r.total > 0);
+  if (eligible.length === 0) return 0;
+
+  const totalWeight = eligible.reduce((s, r) => s + r.total, 0);
+  const sorted = [...eligible].sort((a, b) => a.sla_days - b.sla_days);
+  const target = totalWeight * (pct / 100);
+  let cum = 0;
+  for (const row of sorted) {
+    cum += row.total;
+    if (cum >= target) return row.sla_days;
+  }
+  return sorted[sorted.length - 1].sla_days;
+}
+
+/** When most open tickets should have cleared their SLA window. */
+function computeStableAfterLabel(month: string, rollup: RollupFile): string | null {
+  const p90Sla = weightedSlaPercentile(rollup, 90);
+  if (p90Sla <= 0) return null;
+
+  const [year, mon] = month.split('-').map(Number);
+  const stableDate = new Date(year, mon, 0);
+  stableDate.setDate(stableDate.getDate() + Math.ceil(p90Sla));
+  return stableDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** Four-bucket disposition of a filing-month cohort (100% stacked bar). */
+export function computeCohortDisposition(rollup: RollupFile): CohortDispositionBucket[] {
+  let met = 0;
+  let missed = 0;
+  let overdue = 0;
+  let total = 0;
+
+  for (const row of rollup.sla) {
+    met += row.met_sla_count;
+    missed += row.missed_sla_count;
+    overdue += row.open_past_sla_count;
+    total += row.total;
+  }
+
+  let open = 0;
+  for (const row of rollup.explorer.categoryBreakdown) {
+    open += row.open;
+  }
+
+  const openWithin = Math.max(0, open - overdue);
+  const noSla = Math.max(0, total - met - missed - openWithin - overdue);
+
+  const counts: Record<CohortDispositionBucket['key'], number> = {
+    met,
+    missed,
+    open_within: openWithin,
+    open_overdue: overdue,
+    no_sla: noSla,
+  };
+
+  const order: CohortDispositionBucket['key'][] = [
+    'met',
+    'open_within',
+    'missed',
+    'open_overdue',
+    'no_sla',
+  ];
+
+  return order
+    .map((key) => ({
+      key,
+      label: DISPOSITION_LABELS[key],
+      count: counts[key],
+      color: DISPOSITION_COLORS[key],
+    }))
+    .filter((b) => b.count > 0);
+}
+
+/** Headline vs closed-only SLA, stability date, and summary copy for the cohort. */
+export function computeCohortSettling(rollup: RollupFile, dicts: DataDictionaries): CohortSettling {
+  const agg = aggregateMonth(rollup, dicts);
+  const buckets = computeCohortDisposition(rollup);
+  const closed = agg.met + agg.missed;
+  const openWithin = Math.max(0, agg.open - agg.overdue);
+
+  const pctClosed = agg.total > 0 ? round1((closed / agg.total) * 100) : 0;
+  const pctOpenWithin = agg.total > 0 ? round1((openWithin / agg.total) * 100) : 0;
+  const pctSlaOutcomeKnownPct = pctSlaOutcomeKnown(agg.total, agg.met, agg.missed, agg.overdue);
+  const stableAfterLabel = agg.open > 0 && pctSlaOutcomeKnownPct < SLA_OUTCOME_KNOWN_THRESHOLD
+    ? computeStableAfterLabel(rollup.month, rollup)
+    : null;
+
+  const summaryParts = [`${pctClosed}% closed`, `${pctOpenWithin}% still within SLA`];
+  if (stableAfterLabel) {
+    summaryParts.push(`SLA% may shift until ${stableAfterLabel}`);
+  }
+
+  return {
+    total: agg.total,
+    buckets,
+    pctClosed,
+    pctOpenWithin,
+    pctSlaOutcomeKnown: pctSlaOutcomeKnownPct,
+    pctMetSla: agg.pctMetSla,
+    pctMetSlaClosedOnly: agg.pctMetSlaClosedOnly,
+    stableAfterLabel,
+    summaryLine: summaryParts.join(' · '),
+    slaComparisonLine: `Headline ${agg.pctMetSla}% met SLA · Closed-only ${agg.pctMetSlaClosedOnly}%`,
+    slaOutcomeKnownLine: slaOutcomeKnownLabel(pctSlaOutcomeKnownPct),
+  };
+}
+
+/** Share of a filing-month cohort closed by days since filing. */
+export function computeCumulativeResolutionCurve(
+  rows: ProcessedRequest[],
+  month: string,
+): CumulativeResolutionCurve {
+  const cohort = rows.filter((r) => filingMonthKey(r.date) === month);
+  const total = cohort.length;
+  if (total === 0) return { days: [], pctClosed: [] };
+
+  const closedDays = cohort
+    .filter((r) => r.is_closed && r.resolution_days !== null && r.resolution_days >= 0)
+    .map((r) => r.resolution_days!);
+
+  const maxOpenAge = cohort
+    .filter((r) => r.is_open)
+    .reduce((max, r) => Math.max(max, r.age_days), 0);
+
+  const curveMax = Math.min(
+    120,
+    Math.max(
+      closedDays.length > 0 ? Math.ceil(Math.max(...closedDays)) : 0,
+      Math.ceil(maxOpenAge),
+    ),
+  );
+
+  const days: number[] = [];
+  const pctClosed: number[] = [];
+  for (let d = 0; d <= curveMax; d++) {
+    const closedByDay = closedDays.filter((rd) => rd <= d).length;
+    days.push(d);
+    pctClosed.push(round1((closedByDay / total) * 100));
+  }
+
+  return { days, pctClosed };
+}
+
 export function computeBacklogSnapshot(
   rows: ProcessedRequest[],
   prevOpenTotal: number | null,
-  ageBucketLabels: string[],
 ): BacklogSnapshot {
   const openRows = rows.filter((r) => r.is_open);
-  const bucketCounts = new Map<string, number>();
-  for (const label of ageBucketLabels) {
-    bucketCounts.set(label, 0);
-  }
-  for (const r of openRows) {
-    const count = bucketCounts.get(r.age_bucket) ?? 0;
-    bucketCounts.set(r.age_bucket, count + 1);
+  if (openRows.length === 0) {
+    return {
+      buckets: [],
+      total: 0,
+      prevTotal: prevOpenTotal,
+      delta: prevOpenTotal !== null ? -prevOpenTotal : null,
+    };
   }
 
-  const buckets = ageBucketLabels.map((label) => ({
-    label,
-    count: bucketCounts.get(label) ?? 0,
-  }));
+  const maxAge = openRows.reduce((max, r) => Math.max(max, r.age_days), 0);
+  const p99End = Math.ceil(maxAge * 0.99) + 1;
+  const counts = new Array(p99End + 1).fill(0) as number[];
+
+  for (const r of openRows) {
+    const day = Math.max(0, Math.floor(r.age_days));
+    counts[Math.min(day, p99End)]++;
+  }
+
+  const buckets: BacklogSnapshot['buckets'] = [];
+  for (let day = 0; day < p99End; day++) {
+    buckets.push({ label: String(day), count: counts[day] });
+  }
+  if (counts[p99End] > 0) {
+    buckets.push({ label: `${p99End}+`, count: counts[p99End] });
+  }
 
   const total = openRows.length;
   const delta = prevOpenTotal !== null ? total - prevOpenTotal : null;
@@ -405,16 +617,81 @@ export function computeBacklogSnapshot(
   return { buckets, total, prevTotal: prevOpenTotal, delta };
 }
 
-export function formatKpiWithDelta(
+/** Formats resolution rate as a share of this month's filings. */
+export function formatResolvedScorecardKpi(
+  resolved: number,
+  filed: number,
+  immatureCohort = false,
+): ScorecardKpiDisplay {
+  const pct = filed > 0 ? round1((resolved / filed) * 100) : 0;
+
+  if (filed === 0) {
+    return { value: '0%', detail: 'No filings this month', tone: 'default' };
+  }
+
+  let detail = `${resolved.toLocaleString('en-US')} closed`;
+  if (immatureCohort) {
+    detail += ' · within SLA window';
+  }
+
+  return { value: `${pct}%`, detail, tone: immatureCohort ? 'warning' : 'default' };
+}
+
+export type ScorecardKpiKind = 'filed' | 'median';
+
+export interface ScorecardKpiDisplay {
+  value: string;
+  detail: string | null;
+  tone: 'default' | 'success' | 'warning' | 'danger';
+}
+
+/** Formats % Met SLA with a this-month performance verdict, not MoM. */
+export function formatSlaScorecardKpi(pctMetSla: number): ScorecardKpiDisplay {
+  const verdict = slaVerdictLabel(pctMetSla);
+  return {
+    value: `${pctMetSla}%`,
+    detail: verdict.label,
+    tone: verdict.tone,
+  };
+}
+
+function scorecardComparisonSentence(delta: DeltaValue | null, kind: ScorecardKpiKind): string | null {
+  if (!delta) return null;
+  if (delta.direction === 'flat') return 'Unchanged from last month';
+
+  const n = Math.abs(delta.absolute);
+  const count = n.toLocaleString('en-US');
+
+  switch (kind) {
+    case 'filed':
+      return delta.direction === 'up'
+        ? `${count} more filed than last month`
+        : `${count} fewer filed than last month`;
+    case 'median':
+      return delta.direction === 'down'
+        ? `${n} day${n === 1 ? '' : 's'} faster than last month`
+        : `${n} day${n === 1 ? '' : 's'} slower than last month`;
+  }
+}
+
+/** Formats a scorecard KPI with a plain-language MoM comparison line. */
+export function formatScorecardKpi(
   value: string,
   delta: DeltaValue | null,
-  goodDirection: 'up' | 'down',
-): { value: string; tone: 'success' | 'warning' | 'danger' | 'default' } {
+  kind: ScorecardKpiKind,
+): ScorecardKpiDisplay {
+  const detail = scorecardComparisonSentence(delta, kind);
   if (!delta || delta.direction === 'flat') {
-    return { value, tone: 'default' };
+    return { value, detail, tone: 'default' };
   }
-  const arrow = delta.direction === 'up' ? '▲' : '▼';
-  const isGood = delta.direction === goodDirection;
-  const tone = isGood ? 'success' : 'danger';
-  return { value: `${value} ${arrow} ${delta.formatted}`, tone };
+
+  const improvesWhen = kind === 'median' ? 'down' : null;
+
+  const tone = improvesWhen === null
+    ? 'default'
+    : delta.direction === improvesWhen
+      ? 'success'
+      : 'danger';
+
+  return { value, detail, tone };
 }

@@ -4,11 +4,16 @@ import { ProcessedRequest } from './dataProcessing';
 import {
   computeBacklogSnapshot,
   computeCategorySlaForMonth,
+  computeCohortDisposition,
+  computeCohortSettling,
+  computeCumulativeResolutionCurve,
   computeMonthlyScorecard,
   detectNotables,
   findPrevMonth,
   findYoyMonth,
-  formatKpiWithDelta,
+  formatResolvedScorecardKpi,
+  formatSlaScorecardKpi,
+  formatScorecardKpi,
   getAvailableMonths,
   getLatestCompleteMonth,
 } from './monthlyReport';
@@ -78,10 +83,12 @@ function mockShard(id: string): DataShardMeta {
   return { id, file: `${id}.json`, rollupFile: `rollups/${id}.json`, rowCount: 100, minDate: 0, maxDate: 0 };
 }
 
-function mockOpenRequest(ageBucket: string): ProcessedRequest {
+function mockOpenRequest(ageDays: number, month = '2025-05'): ProcessedRequest {
+  const [year, mon] = month.split('-').map(Number);
+  const date = new Date(year, mon - 1, 15);
   return {
     SERVICEREQUESTID: '1',
-    ADDDATE: '2025-04-15',
+    ADDDATE: date.toISOString().slice(0, 10),
     RESOLUTIONDATE: null,
     SERVICEDUEDATE: '2025-04-25',
     SERVICEORDERDATE: null,
@@ -106,16 +113,31 @@ function mockOpenRequest(ageBucket: string): ProcessedRequest {
     WARD: '1',
     LATITUDE: null,
     LONGITUDE: null,
-    date: new Date(2025, 3, 15),
-    week: new Date(2025, 3, 14),
+    date,
+    week: new Date(year, mon - 1, 14),
     hour: 12,
     dayOfWeek: 'Tuesday',
     category: 'Sanitation & Dumping',
     is_open: true,
     is_closed: false,
-    age_days: 5,
+    age_days: ageDays,
     resolution_days: null,
-    age_bucket: ageBucket,
+    age_bucket: ageDays < 7 ? '< 1 week' : '1–4 weeks',
+  };
+}
+
+function mockClosedRequest(resolutionDays: number, month = '2025-05'): ProcessedRequest {
+  const [year, mon] = month.split('-').map(Number);
+  const date = new Date(year, mon - 1, 15);
+  return {
+    ...mockOpenRequest(0),
+    is_open: false,
+    is_closed: true,
+    age_days: resolutionDays,
+    resolution_days: resolutionDays,
+    date,
+    ADDDATE: date.toISOString().slice(0, 10),
+    SERVICEORDERSTATUS: 'Closed',
   };
 }
 
@@ -184,10 +206,30 @@ describe('computeMonthlyScorecard', () => {
     const scorecard = computeMonthlyScorecard(current, null, null, dicts);
 
     expect(scorecard.pctMetSla).toBe(92);
+    expect(scorecard.pctMetSlaClosedOnly).toBeCloseTo(94.8, 1);
     expect(scorecard.totalFiled).toBe(100);
     expect(scorecard.totalResolved).toBe(80);
     expect(scorecard.netBacklogChange).toBe(20);
     expect(scorecard.medianResolutionDays).toBe(3);
+    expect(scorecard.immatureCohort).toBe(false);
+  });
+
+  it('flags provisional cohorts on the scorecard', () => {
+    const current = mockRollup('2025-05', {
+      sla: [mockSlaRow({
+        serviceType: 0,
+        category: 0,
+        total: 100,
+        met_sla_count: 45,
+        missed_sla_count: 5,
+        open_past_sla_count: 5,
+      })],
+      categoryBreakdown: [{ c: 0, open: 50, resolved: 50 }],
+    });
+
+    const scorecard = computeMonthlyScorecard(current, null, null, dicts);
+
+    expect(scorecard.immatureCohort).toBe(true);
   });
 
   it('includes MoM and YoY deltas when comparison rollups exist', () => {
@@ -333,50 +375,194 @@ describe('detectNotables', () => {
 });
 
 describe('computeBacklogSnapshot', () => {
-  const labels = ['< 1 week', '1–4 weeks', '1–2 months', '2–3 months'];
-
-  it('buckets open tickets by age and computes delta', () => {
+  it('buckets open tickets by day and computes delta', () => {
     const snapshot = computeBacklogSnapshot(
       [
-        mockOpenRequest('< 1 week'),
-        mockOpenRequest('< 1 week'),
-        mockOpenRequest('1–4 weeks'),
+        mockOpenRequest(5),
+        mockOpenRequest(5),
+        mockOpenRequest(20),
       ],
       2,
-      labels,
     );
 
     expect(snapshot.total).toBe(3);
-    expect(snapshot.buckets[0].count).toBe(2);
-    expect(snapshot.buckets[1].count).toBe(1);
+    expect(snapshot.buckets.find((b) => b.label === '5')?.count).toBe(2);
+    expect(snapshot.buckets.find((b) => b.label === '20')?.count).toBe(1);
     expect(snapshot.delta).toBe(1);
+  });
+
+  it('rolls tail ages into a final day+ bucket', () => {
+    const snapshot = computeBacklogSnapshot([mockOpenRequest(200)], null);
+
+    expect(snapshot.buckets.some((b) => b.label.endsWith('+'))).toBe(true);
   });
 });
 
-describe('formatKpiWithDelta', () => {
-  it('marks SLA increases as success and decreases as danger', () => {
-    expect(formatKpiWithDelta('96%', { absolute: 1.2, direction: 'up', formatted: '+1.2 pts' }, 'up')).toEqual({
-      value: '96% ▲ +1.2 pts',
+describe('computeCohortDisposition', () => {
+  it('splits a filing month into disposition buckets', () => {
+    const rollup = mockRollup('2025-05', {
+      sla: [mockSlaRow({
+        serviceType: 0,
+        category: 0,
+        total: 100,
+        met_sla_count: 70,
+        missed_sla_count: 10,
+        open_past_sla_count: 5,
+      })],
+      categoryBreakdown: [{ c: 0, open: 20, resolved: 80 }],
+    });
+
+    const buckets = computeCohortDisposition(rollup);
+    const byKey = Object.fromEntries(buckets.map((b) => [b.key, b.count]));
+
+    expect(byKey.met).toBe(70);
+    expect(byKey.missed).toBe(10);
+    expect(byKey.open_overdue).toBe(5);
+    expect(byKey.open_within).toBe(15);
+    expect(buckets.some((b) => b.key === 'no_sla')).toBe(false);
+  });
+});
+
+describe('computeCohortSettling', () => {
+  const dicts = mockDicts();
+
+  it('builds summary and SLA comparison lines', () => {
+    const rollup = mockRollup('2025-05', {
+      sla: [mockSlaRow({
+        serviceType: 0,
+        category: 0,
+        total: 100,
+        met_sla_count: 70,
+        missed_sla_count: 10,
+        open_past_sla_count: 5,
+        sla_days: 14,
+      })],
+      categoryBreakdown: [{ c: 0, open: 20, resolved: 80 }],
+    });
+
+    const settling = computeCohortSettling(rollup, dicts);
+
+    expect(settling.pctClosed).toBe(80);
+    expect(settling.pctOpenWithin).toBe(15);
+    expect(settling.pctMetSla).toBe(85);
+    expect(settling.pctMetSlaClosedOnly).toBeCloseTo(73.7, 1);
+    expect(settling.summaryLine).toContain('80% closed');
+    expect(settling.summaryLine).toContain('15% still within SLA');
+    expect(settling.summaryLine).toContain('SLA% may shift until');
+    expect(settling.slaComparisonLine).toContain('Headline 85% met SLA');
+    expect(settling.slaComparisonLine).toContain('Closed-only 73.7%');
+    expect(settling.slaOutcomeKnownLine).toBe('85% closed or past SLA deadline');
+  });
+
+  it('omits stability date when the cohort is fully closed', () => {
+    const rollup = mockRollup('2025-05', {
+      sla: [mockSlaRow({ serviceType: 0, category: 0, total: 100, open_past_sla_count: 0 })],
+      categoryBreakdown: [{ c: 0, open: 0, resolved: 100 }],
+    });
+
+    const settling = computeCohortSettling(rollup, dicts);
+
+    expect(settling.stableAfterLabel).toBeNull();
+    expect(settling.summaryLine).not.toContain('SLA% may shift');
+  });
+});
+
+describe('computeCumulativeResolutionCurve', () => {
+  it('tracks cumulative closure by days since filing', () => {
+    const curve = computeCumulativeResolutionCurve([
+      mockClosedRequest(1),
+      mockClosedRequest(3),
+      mockClosedRequest(10),
+      mockOpenRequest(5),
+    ], '2025-05');
+
+    expect(curve.days).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(curve.pctClosed[0]).toBe(0);
+    expect(curve.pctClosed[1]).toBe(25);
+    expect(curve.pctClosed[3]).toBe(50);
+    expect(curve.pctClosed[5]).toBe(50);
+    expect(curve.pctClosed[10]).toBe(75);
+  });
+
+  it('returns empty series when no cohort rows match', () => {
+    expect(computeCumulativeResolutionCurve([], '2025-05')).toEqual({ days: [], pctClosed: [] });
+  });
+});
+
+describe('formatSlaScorecardKpi', () => {
+  it('describes this-month SLA performance, not MoM', () => {
+    expect(formatSlaScorecardKpi(99)).toEqual({
+      value: '99%',
+      detail: 'Meeting expectations',
       tone: 'success',
     });
-    expect(formatKpiWithDelta('96%', { absolute: -2, direction: 'down', formatted: '-2 pts' }, 'up')).toEqual({
-      value: '96% ▼ -2 pts',
+    expect(formatSlaScorecardKpi(96.3)).toEqual({
+      value: '96.3%',
+      detail: 'Slipping below expectations',
+      tone: 'warning',
+    });
+    expect(formatSlaScorecardKpi(85)).toEqual({
+      value: '85%',
+      detail: 'Well below expectations',
       tone: 'danger',
     });
   });
+});
 
-  it('marks median resolution decreases as success', () => {
-    expect(formatKpiWithDelta('5d', { absolute: -1, direction: 'down', formatted: '-1d' }, 'down')).toEqual({
-      value: '5d ▼ -1d',
+describe('formatResolvedScorecardKpi', () => {
+  it('shows percent resolved with a this-month count breakdown', () => {
+    expect(formatResolvedScorecardKpi(12946, 19407, true)).toEqual({
+      value: '66.7%',
+      detail: '12,946 closed · within SLA window',
+      tone: 'warning',
+    });
+  });
+
+  it('flags provisional cohorts when still within SLA window', () => {
+    expect(formatResolvedScorecardKpi(50, 100, true)).toEqual({
+      value: '50%',
+      detail: '50 closed · within SLA window',
+      tone: 'warning',
+    });
+    expect(formatResolvedScorecardKpi(75, 100, false)).toEqual({
+      value: '75%',
+      detail: '75 closed',
+      tone: 'default',
+    });
+  });
+
+  it('handles zero filings', () => {
+    expect(formatResolvedScorecardKpi(0, 0)).toEqual({
+      value: '0%',
+      detail: 'No filings this month',
+      tone: 'default',
+    });
+  });
+});
+
+describe('formatScorecardKpi', () => {
+  it('writes volume comparisons without good/bad coloring', () => {
+    expect(formatScorecardKpi('19,407', { absolute: -22814, direction: 'down', formatted: '-22814' }, 'filed')).toEqual({
+      value: '19,407',
+      detail: '22,814 fewer filed than last month',
+      tone: 'default',
+    });
+  });
+
+  it('writes median resolution comparisons', () => {
+    expect(formatScorecardKpi('1.9d', { absolute: -3, direction: 'down', formatted: '-3d' }, 'median')).toEqual({
+      value: '1.9d',
+      detail: '3 days faster than last month',
       tone: 'success',
     });
   });
 
-  it('returns default tone when delta is flat or missing', () => {
-    expect(formatKpiWithDelta('96%', { absolute: 0, direction: 'flat', formatted: '0' }, 'up')).toEqual({
-      value: '96%',
+  it('handles flat or missing deltas', () => {
+    expect(formatScorecardKpi('19,407', { absolute: 0, direction: 'flat', formatted: '0' }, 'filed')).toEqual({
+      value: '19,407',
+      detail: 'Unchanged from last month',
       tone: 'default',
     });
-    expect(formatKpiWithDelta('96%', null, 'up')).toEqual({ value: '96%', tone: 'default' });
+    expect(formatScorecardKpi('19,407', null, 'filed')).toEqual({ value: '19,407', detail: null, tone: 'default' });
   });
 });

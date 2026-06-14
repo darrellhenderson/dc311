@@ -54,6 +54,8 @@ export interface MonthlySlaSummary {
   open: number;
   resolved: number;
   pctResolved: number;
+  /** Share closed or open past SLA deadline — knowable for reporting. */
+  pctSlaOutcomeKnown: number;
   immatureCohort: boolean;
   tone: SlaTone;
 }
@@ -134,8 +136,24 @@ export const PERCEPTIBILITY_RESIDENT_CATEGORIES = [
   'Rodent Control',
 ] as const;
 
-// Months whose >30% of cohort is still open are flagged as immature (insufficient time elapsed for SLA evaluation).
-const IMMATURE_OPEN_RATIO = 0.3;
+// Cohorts below this share of closed-or-past-deadline tickets are flagged provisional.
+export const SLA_OUTCOME_KNOWN_THRESHOLD = 99;
+
+/** Share of cohort where SLA outcome is knowable: closed (on time or late) or open past deadline. */
+export function pctSlaOutcomeKnown(total: number, met: number, missed: number, overdue: number): number {
+  if (total <= 0) return 100;
+  return round1(((met + missed + overdue) / total) * 100);
+}
+
+/** Plain-language line for the cohort disposition reporting-readiness metric. */
+export function slaOutcomeKnownLabel(pct: number): string {
+  return `${pct}% closed or past SLA deadline`;
+}
+
+/** True when too many tickets are still within their SLA window for stable reporting. */
+export function isImmatureCohort(total: number, met: number, missed: number, overdue: number): boolean {
+  return total > 0 && pctSlaOutcomeKnown(total, met, missed, overdue) < SLA_OUTCOME_KNOWN_THRESHOLD;
+}
 
 /** Service types omitted from the compliance-vs-resolution chart. */
 const COMPLIANCE_COMPARISON_EXCLUDED_TYPES = new Set([
@@ -207,7 +225,8 @@ export function computeMonthlySlaSummary(rollups: RollupFile[]): MonthlySlaSumma
     .map((file) => {
       const agg = aggregateSlaFromRollup(file);
       const pctResolved = agg.total > 0 ? (agg.resolved / agg.total) * 100 : 0;
-      const immatureCohort = agg.total > 0 && agg.open / agg.total > IMMATURE_OPEN_RATIO;
+      const outcomeKnown = pctSlaOutcomeKnown(agg.total, agg.met, agg.missed, agg.overdue);
+      const immatureCohort = isImmatureCohort(agg.total, agg.met, agg.missed, agg.overdue);
       const pctMetSla = round1(agg.pctMetSla);
 
       return {
@@ -220,6 +239,7 @@ export function computeMonthlySlaSummary(rollups: RollupFile[]): MonthlySlaSumma
         open: agg.open,
         resolved: agg.resolved,
         pctResolved: round1(pctResolved),
+        pctSlaOutcomeKnown: outcomeKnown,
         immatureCohort,
         tone: slaTone(pctMetSla),
       };
@@ -267,7 +287,8 @@ function bucketFromAgg(month: string, agg: MonthCategoryBucket): MonthlySlaSumma
   const pctMetSla = agg.total > 0 ? round1(((agg.total - failures) / agg.total) * 100) : 0;
   const pctMetSlaClosedOnly = agg.closed > 0 ? round1((agg.met / agg.closed) * 100) : 0;
   const pctResolved = agg.total > 0 ? round1((agg.resolved / agg.total) * 100) : 0;
-  const immatureCohort = agg.total > 0 && agg.open / agg.total > IMMATURE_OPEN_RATIO;
+  const outcomeKnown = pctSlaOutcomeKnown(agg.total, agg.met, agg.missed, agg.overdue);
+  const immatureCohort = isImmatureCohort(agg.total, agg.met, agg.missed, agg.overdue);
 
   return {
     month,
@@ -279,6 +300,7 @@ function bucketFromAgg(month: string, agg: MonthCategoryBucket): MonthlySlaSumma
     open: agg.open,
     resolved: agg.resolved,
     pctResolved,
+    pctSlaOutcomeKnown: outcomeKnown,
     immatureCohort,
     tone: slaTone(pctMetSla),
   };

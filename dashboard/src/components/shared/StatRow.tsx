@@ -5,6 +5,8 @@ export interface StatItem {
   label: string;
   value: string | number;
   tone?: KpiTone;
+  /** Plain-language comparison vs prior month. */
+  detail?: string;
 }
 
 const valueColor: Record<KpiTone, string | undefined> = {
@@ -27,6 +29,14 @@ export default function StatRow({ stats }: { stats: StatItem[] }) {
           >
             {stat.value}
           </p>
+          {stat.detail && (
+            <p
+              className="text-caption mb-0 mt-1 leading-snug"
+              style={{ color: valueColor[stat.tone ?? 'default'] || colors.textMuted }}
+            >
+              {stat.detail}
+            </p>
+          )}
         </div>
       ))}
     </div>

@@ -10,13 +10,16 @@ import {
   detectNotables,
   computeWardBreakdown,
   computeVolumeSummary,
-  computeBacklogSnapshot,
+  computeCohortSettling,
+  computeCumulativeResolutionCurve,
   getAvailableMonths,
   getLatestCompleteMonth,
   findRollup,
   findPrevMonth,
   findYoyMonth,
-  formatKpiWithDelta,
+  formatResolvedScorecardKpi,
+  formatSlaScorecardKpi,
+  formatScorecardKpi,
   Notable,
 } from '../../lib/monthlyReport';
 import { slaCategorySummaryChart, slaCategoryVolumeMarkerSize } from '../../lib/charts';
@@ -35,6 +38,7 @@ import StatRow, { StatItem } from '../shared/StatRow';
 import SingleSelect from '../shared/filters/SingleSelect';
 import { colors } from '../../lib/theme';
 import { plotlyAxisTitleFont } from '../../lib/theme';
+import { SLA_OUTCOME_KNOWN_THRESHOLD } from '../../lib/overviewAnalytics';
 
 interface ReportTabProps {
   month: string | null;
@@ -127,17 +131,15 @@ export default function ReportTab({ month, onMonthChange }: ReportTabProps) {
     return computeVolumeSummary(currentRollup, dicts);
   }, [currentRollup, dicts]);
 
-  const backlog = useMemo(() => {
-    if (!dicts) return null;
-    const prevOpen = prevRollup
-      ? prevRollup.explorer.categoryBreakdown.reduce((s, r) => s + r.open, 0)
-      : null;
-    return computeBacklogSnapshot(
-      dashboardData?.rows ?? [],
-      prevOpen,
-      dicts.ageBuckets,
-    );
-  }, [dashboardData?.rows, prevRollup, dicts]);
+  const cohortSettling = useMemo(() => {
+    if (!currentRollup || !dicts) return null;
+    return computeCohortSettling(currentRollup, dicts);
+  }, [currentRollup, dicts]);
+
+  const resolutionCurve = useMemo(() => {
+    if (!selectedMonth || !dashboardData?.rows) return null;
+    return computeCumulativeResolutionCurve(dashboardData.rows, selectedMonth);
+  }, [dashboardData?.rows, selectedMonth]);
 
   const catChart = useMemo(() => {
     if (!currentRollup || !dicts) return null;
@@ -155,19 +157,19 @@ export default function ReportTab({ month, onMonthChange }: ReportTabProps) {
 
   const scorecardStats = useMemo((): StatItem[] => {
     if (!report) return [];
-    const sla = formatKpiWithDelta(`${report.pctMetSla}%`, report.deltas.pctMetSla, 'up');
-    const filed = formatKpiWithDelta(report.totalFiled.toLocaleString(), report.deltas.totalFiled, 'down');
-    const resolved = formatKpiWithDelta(report.totalResolved.toLocaleString(), report.deltas.totalResolved, 'up');
-    const median = formatKpiWithDelta(
+    const sla = formatSlaScorecardKpi(report.pctMetSla);
+    const filed = formatScorecardKpi(report.totalFiled.toLocaleString(), report.deltas.totalFiled, 'filed');
+    const resolved = formatResolvedScorecardKpi(report.totalResolved, report.totalFiled, report.immatureCohort);
+    const median = formatScorecardKpi(
       `${report.medianResolutionDays}d`,
       report.deltas.medianResolutionDays,
-      'down',
+      'median',
     );
     return [
-      { label: '% Met SLA', value: sla.value, tone: sla.tone },
-      { label: 'Requests filed', value: filed.value, tone: filed.tone },
-      { label: 'Resolved', value: resolved.value, tone: resolved.tone },
-      { label: 'Median resolution', value: median.value, tone: median.tone },
+      { label: '% Met SLA', value: sla.value, detail: sla.detail ?? undefined, tone: sla.tone },
+      { label: 'Requests filed', value: filed.value, detail: filed.detail ?? undefined, tone: filed.tone },
+      { label: 'Resolved', value: resolved.value, detail: resolved.detail ?? undefined, tone: resolved.tone },
+      { label: 'Median resolution', value: median.value, detail: median.detail ?? undefined, tone: median.tone },
     ];
   }, [report]);
 
@@ -204,6 +206,18 @@ export default function ReportTab({ month, onMonthChange }: ReportTabProps) {
           </div>
         </div>
       </div>
+
+      {report.immatureCohort && (
+        <div
+          className="font-mono rounded-lg border border-orange-200 bg-orange-50 px-4 py-3"
+          role="status"
+        >
+          <p className="text-sm text-orange-900 mb-0">
+            <span className="font-semibold">Provisional stats.</span>{' '}
+            Some tickets from this month are still within their SLA window — compliance and resolution figures may shift.
+          </p>
+        </div>
+      )}
 
       <StatRow stats={scorecardStats} />
 
@@ -381,36 +395,91 @@ export default function ReportTab({ month, onMonthChange }: ReportTabProps) {
       </SectionCard>
 
       <SectionCard
-        title="Aging backlog"
-        subtitle="Currently open tickets by age (snapshot at data refresh)"
+        title="Cohort settling"
+        subtitle={`${report.label} filings · how this month's cohort is resolving`}
         defaultOpen
       >
-        <DeferredChart minHeight={280}>
-          <PlotlyChart
-            data={[{
-              x: backlog?.buckets.map((b) => b.label) ?? [],
-              y: backlog?.buckets.map((b) => b.count) ?? [],
-              type: 'bar' as const,
-              marker: { color: colors.warning },
-              text: backlog?.buckets.map((b) => b.count.toLocaleString()) ?? [],
-              textposition: 'outside' as const,
-            }]}
-            layout={{
-              height: isMobile ? 280 : 320,
-              title: chartTitle('Open ticket age'),
-              xaxis: { title: 'Age bucket' },
-              yaxis: { title: 'Open tickets', tickformat: ',' },
-              margin: stackedBarMargin(isMobile),
-            }}
-          />
-        </DeferredChart>
-        {backlog && (
-          <p className="text-caption text-text-muted mt-2 mb-0">
-            {backlog.total.toLocaleString()} open tickets total
-            {backlog.delta !== null && (
-              <> · {backlog.delta >= 0 ? '+' : ''}{backlog.delta.toLocaleString()} vs prior month rollup</>
+        {cohortSettling && cohortSettling.buckets.length > 0 && (
+          <DeferredChart minHeight={120}>
+            <PlotlyChart
+              data={cohortSettling.buckets.map((b) => {
+                const pct = cohortSettling.total > 0
+                  ? (b.count / cohortSettling.total) * 100
+                  : 0;
+                return {
+                  name: b.label,
+                  y: [report.label],
+                  x: [pct],
+                  customdata: [[b.count]],
+                  type: 'bar' as const,
+                  orientation: 'h' as const,
+                  marker: { color: b.color },
+                  text: [`${pct.toFixed(1)}%`],
+                  textposition: 'inside' as const,
+                  insidetextanchor: 'middle' as const,
+                  hovertemplate: `${b.label}: %{x:.1f}% (%{customdata[0]:,})<extra></extra>`,
+                };
+              })}
+              layout={{
+                barmode: 'stack' as const,
+                height: isMobile ? 100 : 120,
+                title: chartTitle('Cohort disposition'),
+                xaxis: { title: '% of filings', range: [0, 100], ticksuffix: '%', showgrid: false },
+                yaxis: { showticklabels: false, automargin: true },
+                margin: { t: 56, b: 40, l: 20, r: 20 },
+                legend: legendBelow(isMobile),
+                showlegend: true,
+              }}
+            />
+          </DeferredChart>
+        )}
+        {cohortSettling && (
+          <p
+            className={`text-sm font-medium mt-2 mb-0 ${
+              cohortSettling.pctSlaOutcomeKnown < SLA_OUTCOME_KNOWN_THRESHOLD
+                ? 'text-orange-600'
+                : 'text-text-muted'
+            }`}
+          >
+            {cohortSettling.slaOutcomeKnownLine}
+            {cohortSettling.pctSlaOutcomeKnown < SLA_OUTCOME_KNOWN_THRESHOLD && (
+              <span className="font-normal"> · compliance may still shift</span>
             )}
           </p>
+        )}
+        {cohortSettling && (
+          <p className="text-caption text-text-muted mt-2 mb-0">
+            {cohortSettling.summaryLine}
+          </p>
+        )}
+        {cohortSettling && (
+          <p className="text-caption text-text-muted mt-1 mb-0">
+            {cohortSettling.slaComparisonLine}
+          </p>
+        )}
+        {resolutionCurve && resolutionCurve.days.length > 0 && (
+          <DeferredChart minHeight={280}>
+            <PlotlyChart
+              data={[{
+                x: resolutionCurve.days,
+                y: resolutionCurve.pctClosed,
+                type: 'scatter' as const,
+                mode: 'lines' as const,
+                name: '% closed',
+                line: { color: colors.primary, width: 2 },
+                fill: 'tozeroy' as const,
+                fillcolor: 'rgba(52, 152, 219, 0.15)',
+              }]}
+              layout={{
+                height: isMobile ? 280 : 320,
+                title: chartTitle('Cumulative resolution curve'),
+                xaxis: { title: 'Days since filing', dtick: resolutionCurve.days.length > 60 ? 14 : 7 },
+                yaxis: { title: '% of cohort closed', range: [0, 100] },
+                margin: stackedBarMargin(isMobile),
+                showlegend: false,
+              }}
+            />
+          </DeferredChart>
         )}
       </SectionCard>
     </div>
