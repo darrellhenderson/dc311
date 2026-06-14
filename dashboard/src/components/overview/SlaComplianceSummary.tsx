@@ -2,11 +2,6 @@ import { MonthlySlaSummary, slaVerdictLabel } from '../../lib/overviewAnalytics'
 import { colors } from '../../lib/theme';
 import MonthlySlaTimeline from './MonthlySlaTimeline';
 
-interface WorstCategory {
-  category: string;
-  pctMetSla: number;
-}
-
 interface SlaComplianceSummaryProps {
   pctMetSla: number;
   failures: number;
@@ -14,8 +9,6 @@ interface SlaComplianceSummaryProps {
   months: MonthlySlaSummary[];
   categoriesBelow95Count: number;
   totalCategoryCount: number;
-  worstCategory: WorstCategory | null;
-  onNavigate: (tab: 'sla' | 'explorer') => void;
 }
 
 const toneColor = {
@@ -38,8 +31,6 @@ export default function SlaComplianceSummary({
   months,
   categoriesBelow95Count,
   totalCategoryCount,
-  worstCategory,
-  onNavigate,
 }: SlaComplianceSummaryProps) {
   const verdict = slaVerdictLabel(pctMetSla);
   const color = toneColor[verdict.tone];
@@ -50,6 +41,9 @@ export default function SlaComplianceSummary({
       <h2 className="article-headline">SLA compliance</h2>
       <p className="article-dek">
         Whether DC met its promised 311 deadlines over the last twelve months.
+        {categoriesBelow95Count > 0 && (
+          <> {categoriesBelow95Count} of {totalCategoryCount} categories fall below 95%.</>
+        )}
       </p>
 
       <div className="font-mono">
@@ -76,28 +70,6 @@ export default function SlaComplianceSummary({
         </div>
 
         <MonthlySlaTimeline months={months} />
-
-        <p className="text-caption text-text-muted mt-3 mb-0">
-          Each block is requests <em>filed</em> that month. Hover for detail; click to keep it visible.
-        </p>
-
-        {categoriesBelow95Count > 0 && (
-          <p className="text-sm text-gray-700 mt-3 mb-0">
-            {categoriesBelow95Count} of {totalCategoryCount} categories fall below 95%
-            {worstCategory && (
-              <>, led by {worstCategory.category} ({worstCategory.pctMetSla}%)</>
-            )}
-            . See{' '}
-            <button
-              type="button"
-              className="article-link"
-              onClick={() => onNavigate('sla')}
-            >
-              category scores on the Performance tab
-            </button>
-            .
-          </p>
-        )}
       </div>
     </section>
   );

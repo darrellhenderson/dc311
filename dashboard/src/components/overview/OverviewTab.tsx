@@ -109,14 +109,6 @@ export default function OverviewTab() {
     [categoryMonthly, perceptibilityChartCategories],
   );
 
-  const worstCategory = useMemo(() => {
-    const below = catSummary
-      .filter((c) => c.pct_met_sla < 95)
-      .sort((a, b) => a.pct_met_sla - b.pct_met_sla || b.total - a.total);
-    const lead = below[0];
-    return lead ? { category: lead.category, pctMetSla: lead.pct_met_sla } : null;
-  }, [catSummary]);
-
   const categoriesBelow95Count = useMemo(
     () => catSummary.filter((c) => c.pct_met_sla < 95).length,
     [catSummary],
@@ -282,8 +274,6 @@ export default function OverviewTab() {
         months={monthly}
         categoriesBelow95Count={categoriesBelow95Count}
         totalCategoryCount={catSummary.length}
-        worstCategory={worstCategory}
-        onNavigate={handleTabNavigate}
       />
 
       <section ref={throughputSectionRef} className="article-section article-prose">
