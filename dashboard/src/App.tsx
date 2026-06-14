@@ -13,6 +13,7 @@ import { TAB_IDS, TabId } from './lib/site';
 const OverviewTab = lazy(() => import('./components/overview/OverviewTab'));
 const SLATab = lazy(() => import('./components/sla/SLATab'));
 const ExplorerTab = lazy(() => import('./components/explorer/ExplorerTab'));
+const ReportTab = lazy(() => import('./components/report/ReportTab'));
 const RawDataTab = lazy(() => import('./components/raw/RawDataTab'));
 
 const queryClient = new QueryClient({
@@ -42,6 +43,10 @@ function readInitialTab(): TabId {
 
 function DashboardShell() {
   const [activeTab, setActiveTab] = useState<TabId>(readInitialTab);
+  const [reportMonth, setReportMonth] = useState<string | null>(() => {
+    const params = new window.URLSearchParams(window.location.search);
+    return params.get('month');
+  });
   const [datePreset, setDatePreset] = useState<DateRangePreset>('full');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number; currentShard: string } | null>(null);
@@ -66,9 +71,12 @@ function DashboardShell() {
     }
     const params = new window.URLSearchParams();
     params.set('tab', activeTab);
+    if (activeTab === 'report' && reportMonth) {
+      params.set('month', reportMonth);
+    }
     const url = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState(null, '', url);
-  }, [activeTab]);
+  }, [activeTab, reportMonth]);
 
   const handleDatePresetChange = useCallback((preset: DateRangePreset) => {
     setDatePreset((current) => {
@@ -161,6 +169,9 @@ function DashboardShell() {
               {activeTab === 'overview' && <OverviewTab />}
               {activeTab === 'sla' && <SLATab />}
               {activeTab === 'explorer' && <ExplorerTab />}
+              {activeTab === 'report' && (
+                <ReportTab month={reportMonth} onMonthChange={setReportMonth} />
+              )}
               {activeTab === 'raw' && <RawDataTab />}
             </Suspense>
           )}

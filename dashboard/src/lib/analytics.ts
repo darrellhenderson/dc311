@@ -48,7 +48,7 @@ export type OutboundLink =
   | 'github_profile'
   | 'linkedin';
 
-export type AnalyticsFilterTab = 'sla' | 'explorer' | 'raw';
+export type AnalyticsFilterTab = 'sla' | 'explorer' | 'report' | 'raw';
 
 /** Records an external link click from the footer or About panel. */
 export function trackOutboundClick(link: OutboundLink): void {

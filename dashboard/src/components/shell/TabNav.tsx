@@ -9,7 +9,7 @@ export default function TabNav({ activeTab, onTabChange }: TabNavProps) {
   return (
     <nav className="sticky top-0 z-30 bg-surface border-b border-border" aria-label="Dashboard views">
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:flex md:space-x-1" role="tablist">
+        <div className="grid grid-cols-2 sm:grid-cols-5 md:flex md:space-x-1" role="tablist">
           {TAB_CONFIG.map((tab) => {
             const isActive = activeTab === tab.id;
             return (

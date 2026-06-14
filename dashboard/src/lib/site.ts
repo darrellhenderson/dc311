@@ -20,6 +20,7 @@ export const TAB_CONFIG = [
   { id: 'overview' as const, label: 'Overview', subtitle: 'The big picture' },
   { id: 'sla' as const, label: 'Performance', subtitle: 'By category and service type' },
   { id: 'explorer' as const, label: 'Explore', subtitle: 'Ward, timing, and volume' },
+  { id: 'report' as const, label: 'Report', subtitle: 'Monthly scorecard' },
   { id: 'raw' as const, label: 'Records', subtitle: 'The raw data' },
 ];
 
