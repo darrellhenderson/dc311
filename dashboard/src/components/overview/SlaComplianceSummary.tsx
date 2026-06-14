@@ -38,35 +38,28 @@ export default function SlaComplianceSummary({
 
   return (
     <section className="article-section article-prose">
-      <h2 className="article-headline">SLA compliance</h2>
+      <h2 className="article-headline">The service level agreement</h2>
       <p className="article-dek">
-        Whether DC met its promised 311 deadlines over the last twelve months.
+        Did DC meet its promised 311 deadlines over the last twelve months?
         {categoriesBelow95Count > 0 && (
           <> {categoriesBelow95Count} of {totalCategoryCount} categories fall below 95%.</>
         )}
       </p>
 
       <div className="font-mono">
-        <div
-          className="flex flex-wrap items-baseline gap-x-4 sm:gap-x-5 gap-y-1 mb-2"
-          aria-label={`${pctMetSla}% met SLA, ${verdict.label}`}
-        >
-          <span
-            className="text-7xl sm:text-8xl font-bold leading-none tabular-nums tracking-tight"
-            style={{ color }}
-          >
-            {pctMetSla}%
-          </span>
-          <span
-            className="text-xl sm:text-2xl font-bold leading-snug"
-            style={{ color }}
-          >
-            {verdict.label}
-          </span>
-        </div>
-
         <div className="mb-3">
-          {detail && <p className="text-caption text-text-muted mb-0">{detail}</p>}
+          <p
+            className="text-xl sm:text-2xl font-bold leading-snug mb-0"
+            style={{ color }}
+          >
+            <span className="text-7xl sm:text-8xl tabular-nums tracking-tight leading-none">
+              {pctMetSla}%
+            </span>
+            {' '}met SLA. {verdict.label}.
+          </p>
+          {detail && (
+            <p className="text-caption text-text-muted mt-1 mb-0">{detail}</p>
+          )}
         </div>
 
         <MonthlySlaTimeline months={months} />

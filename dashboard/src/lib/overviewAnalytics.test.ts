@@ -114,10 +114,16 @@ describe('slaTone', () => {
 
 describe('slaVerdictLabel', () => {
   it('maps SLO bands to plain-language verdicts', () => {
-    expect(slaVerdictLabel(99)).toEqual({ label: 'Met target', tone: 'success' });
-    expect(slaVerdictLabel(95)).toEqual({ label: 'At risk', tone: 'warning' });
-    expect(slaVerdictLabel(85.2)).toEqual({ label: 'Well below expectations', tone: 'danger' });
-    expect(slaVerdictLabel(70)).toEqual({ label: 'Critical', tone: 'danger' });
+    expect(slaVerdictLabel(99)).toEqual({ label: 'Meeting expectations', tone: 'success' });
+    expect(slaVerdictLabel(95)).toEqual({ label: 'Slipping below expectations', tone: 'warning' });
+    expect(slaVerdictLabel(85)).toEqual({ label: 'Well below expectations', tone: 'danger' });
+    expect(slaVerdictLabel(70)).toEqual({ label: 'Critically below expectations', tone: 'danger' });
+  });
+
+  it('switches verdicts at 99%, 95%, and 80% boundaries', () => {
+    expect(slaVerdictLabel(98.9).label).toBe('Slipping below expectations');
+    expect(slaVerdictLabel(94.9).label).toBe('Well below expectations');
+    expect(slaVerdictLabel(79.9).label).toBe('Critically below expectations');
   });
 });
 

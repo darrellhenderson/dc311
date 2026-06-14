@@ -89,14 +89,14 @@ export default function MonthlySlaTimeline({ months }: MonthlySlaTimelineProps) 
           title="Less than 1 in 100 requests missed its deadline. Failure is rare enough that most residents never encounter it."
         >
           <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.success }} />
-          ≥99% met target
+          ≥99% meeting expectations
         </span>
         <span
           className="inline-flex items-center gap-1"
           title="Between 1 and 5 in 100 requests missed their deadline. Failures are becoming noticeable."
         >
           <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.warning }} />
-          ≥95% at risk
+          ≥95% slipping
         </span>
         <span
           className="inline-flex items-center gap-1"
@@ -107,7 +107,7 @@ export default function MonthlySlaTimeline({ months }: MonthlySlaTimelineProps) 
           <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.dangerDeep }} />
           <span aria-hidden="true">→</span>
           <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colors.primaryDeep }} />
-          &lt;95% below target
+          &lt;95% below expectations
         </span>
         <span
           className="inline-flex items-center gap-1"

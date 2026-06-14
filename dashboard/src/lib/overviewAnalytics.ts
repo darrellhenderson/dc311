@@ -150,12 +150,12 @@ export function slaTone(pctMetSla: number): SlaTone {
   return 'danger';
 }
 
-/** Plain-language verdict tied to SLO bands (not school letter grades). */
+/** Headline verdict for the overview hero; bands at 99%, 95%, and 80%. */
 export function slaVerdictLabel(pctMetSla: number): { label: string; tone: SlaTone } {
-  if (pctMetSla >= 99) return { label: 'Met target', tone: 'success' };
-  if (pctMetSla >= 95) return { label: 'At risk', tone: 'warning' };
+  if (pctMetSla >= 99) return { label: 'Meeting expectations', tone: 'success' };
+  if (pctMetSla >= 95) return { label: 'Slipping below expectations', tone: 'warning' };
   if (pctMetSla >= 80) return { label: 'Well below expectations', tone: 'danger' };
-  return { label: 'Critical', tone: 'danger' };
+  return { label: 'Critically below expectations', tone: 'danger' };
 }
 
 function round1(n: number): number {
