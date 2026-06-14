@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useDashboard } from '../../context/DashboardContext';
-import { filterExplorerRows, EMPTY_EXPLORER_FILTERS, ExplorerFilterState } from '../../lib/filterTypes';
+import { filterExplorerRows, EMPTY_EXPLORER_FILTERS, ExplorerFilterState, summarizeExplorerFilterDimensions } from '../../lib/filterTypes';
+import { trackFilterChange } from '../../lib/analytics';
 import { ProcessedRequest } from '../../lib/dataProcessing';
 import { useIsMobile } from '../../hooks/useBreakpoint';
 import ExplorerFilterBar from '../shared/filters/ExplorerFilterBar';
@@ -58,6 +59,17 @@ export default function RawDataTab() {
   const [scrollTop, setScrollTop] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const handleFilterChange = useCallback((next: ExplorerFilterState) => {
+    setFilters((prev) => {
+      trackFilterChange(
+        'raw',
+        summarizeExplorerFilterDimensions(prev),
+        summarizeExplorerFilterDimensions(next),
+      );
+      return next;
+    });
+  }, []);
+
   const filtered = useMemo(() => {
     if (!processed) return [];
     return filterExplorerRows(processed, filters);
@@ -97,7 +109,7 @@ export default function RawDataTab() {
       <ExplorerFilterBar
         rows={processed}
         filters={filters}
-        onChange={setFilters}
+        onChange={handleFilterChange}
       />
 
       <div className="bg-white rounded-lg shadow-sm p-4 border border-border">

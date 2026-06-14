@@ -82,6 +82,25 @@ export function countSlaActiveFilters(filters: SlaFilterState): number {
   return filters.categories.length + filters.serviceTypes.length + filters.agencies.length + filters.wards.length;
 }
 
+/** Active filter dimensions for analytics (values omitted to limit noise and volume). */
+export function summarizeExplorerFilterDimensions(filters: ExplorerFilterState): string {
+  const parts: string[] = [];
+  if (filters.categories.length > 0) parts.push('category');
+  if (filters.serviceTypes.length > 0) parts.push('service_type');
+  if (filters.wards.length > 0) parts.push('ward');
+  if (filters.status !== 'All') parts.push('status');
+  return parts.join(',');
+}
+
+export function summarizeSlaFilterDimensions(filters: SlaFilterState): string {
+  const parts: string[] = [];
+  if (filters.categories.length > 0) parts.push('category');
+  if (filters.serviceTypes.length > 0) parts.push('service_type');
+  if (filters.agencies.length > 0) parts.push('agency');
+  if (filters.wards.length > 0) parts.push('ward');
+  return parts.join(',');
+}
+
 export interface FilterChipItem {
   id: string;
   label: string;
