@@ -8,6 +8,7 @@ import AppHeader from './components/shell/AppHeader';
 import TabNav from './components/shell/TabNav';
 import { DashboardProvider } from './context/DashboardContext';
 import { trackAboutOpen, trackEvent } from './lib/analytics';
+import { TAB_IDS, TabId } from './lib/site';
 
 const OverviewTab = lazy(() => import('./components/overview/OverviewTab'));
 const SLATab = lazy(() => import('./components/sla/SLATab'));
@@ -33,10 +34,14 @@ function TabFallback() {
   );
 }
 
-type TabId = 'overview' | 'sla' | 'explorer' | 'raw';
+function readInitialTab(): TabId {
+  const params = new window.URLSearchParams(window.location.search);
+  const tab = params.get('tab');
+  return TAB_IDS.includes(tab as TabId) ? (tab as TabId) : 'overview';
+}
 
 function DashboardShell() {
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [activeTab, setActiveTab] = useState<TabId>(readInitialTab);
   const [datePreset, setDatePreset] = useState<DateRangePreset>('full');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number; currentShard: string } | null>(null);
@@ -50,6 +55,20 @@ function DashboardShell() {
       return tab;
     });
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'overview') {
+      const url = window.location.pathname;
+      if (window.location.search) {
+        window.history.replaceState(null, '', url);
+      }
+      return;
+    }
+    const params = new window.URLSearchParams();
+    params.set('tab', activeTab);
+    const url = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState(null, '', url);
+  }, [activeTab]);
 
   const handleDatePresetChange = useCallback((preset: DateRangePreset) => {
     setDatePreset((current) => {
