@@ -22,3 +22,7 @@ export const TAB_CONFIG = [
   { id: 'explorer' as const, label: 'Explore', subtitle: 'Ward, timing, and volume' },
   { id: 'raw' as const, label: 'Records', subtitle: 'The raw data' },
 ];
+
+export type TabId = (typeof TAB_CONFIG)[number]['id'];
+
+export const TAB_IDS: TabId[] = TAB_CONFIG.map((tab) => tab.id);

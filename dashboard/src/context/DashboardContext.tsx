@@ -1,5 +1,6 @@
 import { createContext, useContext, ReactNode } from 'react';
 import { DashboardData, DateRangePreset, LoadProgress } from '../api/dataTypes';
+import { TabId } from '../lib/site';
 
 export interface DashboardContextValue {
   data: DashboardData | undefined;
@@ -9,8 +10,8 @@ export interface DashboardContextValue {
   datePreset: DateRangePreset;
   setDatePreset: (preset: DateRangePreset) => void;
   loadProgress: LoadProgress | null;
-  activeTab: 'overview' | 'sla' | 'explorer' | 'raw';
-  setActiveTab: (tab: 'overview' | 'sla' | 'explorer' | 'raw') => void;
+  activeTab: TabId;
+  setActiveTab: (tab: TabId) => void;
 }
 
 const DashboardContext = createContext<DashboardContextValue | null>(null);

@@ -1,6 +1,4 @@
-import { TAB_CONFIG } from '../../lib/site';
-
-type TabId = (typeof TAB_CONFIG)[number]['id'];
+import { TAB_CONFIG, TabId } from '../../lib/site';
 
 interface TabNavProps {
   activeTab: TabId;
