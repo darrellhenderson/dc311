@@ -72,6 +72,10 @@ jobs:
         working-directory: dashboard
         run: npm ci
 
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
       - name: Lint
         working-directory: dashboard
         run: npm run lint
@@ -84,8 +88,16 @@ jobs:
         working-directory: dashboard
         env:
           VITE_GITHUB_REPO_URL: ${{ vars.VITE_GITHUB_REPO_URL || format('https://github.com/{0}', github.repository) }}
-          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('/{0}/', github.event.repository.name) }}
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('{0}{1}', steps.pages.outputs.base_path, steps.pages.outputs.base_path != '' && '/' || '/') }}
         run: npm run build
+
+      - name: Disable Jekyll processing
+        run: touch dashboard/dist/.nojekyll
+
+      - name: Verify Pages artifact
+        run: |
+          test -f dashboard/dist/index.html
+          test -f dashboard/dist/.nojekyll
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
