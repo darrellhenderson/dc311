@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { colors } from '../../lib/theme';
-import { CategoryMonthlySla, MonthlySlaSummary, slaMonthBarColor } from '../../lib/overviewAnalytics';
+import { CategoryMonthlySla, MonthlySlaSummary, SLA_OUTCOME_KNOWN_THRESHOLD, slaMonthBarColor } from '../../lib/overviewAnalytics';
 
 interface CategorySlaTimelinesProps {
   categories: CategoryMonthlySla[];
@@ -207,7 +207,7 @@ export default function CategorySlaTimelines({
         </span>
         <span
           className="flex items-center gap-1.5"
-          title="Less than 99% of tickets are closed or past their SLA deadline. Compliance may still shift."
+          title={`Less than ${SLA_OUTCOME_KNOWN_THRESHOLD}% of tickets are closed or past their SLA deadline. Compliance may still shift.`}
         >
           <span className="w-2 h-2 rounded-full border border-gray-400 bg-white" /> within SLA window
         </span>

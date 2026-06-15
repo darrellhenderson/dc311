@@ -1,7 +1,8 @@
 import { ProcessedRequest, SLACategorySummary, SLARow } from './dataProcessing';
-import { slaScoreColor } from './overviewAnalytics';
+import type { CategoryReportingReadiness } from './monthlyReport';
+import { slaOutcomeKnownColor, slaScoreColor, formatPctSlaOutcomeKnown } from './overviewAnalytics';
 import { WARD_ORDER } from './constants';
-import { CATEGORICAL_COLORS, colors, plotlyLayoutDefaults } from './theme';
+import { CATEGORICAL_COLORS, colors, fonts, plotlyLayoutDefaults } from './theme';
 
 // Shared layout defaults
 export const LAYOUT_DEFAULTS = plotlyLayoutDefaults;
@@ -349,26 +350,58 @@ export function slaCategoryVolumeMarkerSize(
   return Math.max(3, Math.min(9, Math.round(rowHeight * 0.4)));
 }
 
+/** Y-axis label with a settling marker suffix when reporting is still immature. */
+function categoryDisplayLabel(
+  category: string,
+  readinessByCategory?: Map<string, CategoryReportingReadiness>,
+): string {
+  if (!readinessByCategory?.get(category)?.immatureCohort) return category;
+  return `${category} ○`;
+}
+
+function categoryReadinessHoverLine(readiness: CategoryReportingReadiness): string {
+  if (!readiness.immatureCohort) return '';
+  return `<br>Reporting readiness: ${formatPctSlaOutcomeKnown(readiness.pctSlaOutcomeKnown)}`;
+}
+
+function categorySlaHoverHtml(
+  row: SLACategorySummary,
+  readiness?: CategoryReportingReadiness,
+): string {
+  const readinessLine = readiness ? categoryReadinessHoverLine(readiness) : '';
+  return [
+    `<b>${row.category}</b>`,
+    `% Met SLA: ${row.pct_met_sla}%`,
+    `Total requests: ${row.total.toLocaleString()}`,
+    `Resolved on time: ${row.met.toLocaleString()}`,
+    `Resolved past due: ${row.missed.toLocaleString()}`,
+    `Open within window: ${row.openWithin.toLocaleString()}`,
+    `Open past due: ${row.overdue.toLocaleString()}`,
+  ].join('<br>') + readinessLine;
+}
+
 export function slaCategorySummaryChart(
   data: SLACategorySummary[],
-  options?: { markerSize?: number },
+  options?: { markerSize?: number; readinessByCategory?: Map<string, CategoryReportingReadiness> },
 ) {
   const sorted = [...data].sort((a, b) => a.total - b.total);
-  
+  const readinessByCategory = options?.readinessByCategory;
+  const yLabels = sorted.map((row) => categoryDisplayLabel(row.category, readinessByCategory));
+
   const barColors = sorted.map((v) => slaScoreColor(v.pct_met_sla));
-  
-  const hover = sorted.map(row => 
-    `<b>${row.category}</b><br>% Met SLA: ${row.pct_met_sla}%<br>Total Requests: ${row.total.toLocaleString()}<br>Resolved Late: ${row.missed.toLocaleString()}<br>Open & Overdue: ${row.overdue.toLocaleString()}<br>Known Failures: ${(row.missed + row.overdue).toLocaleString()}`
-  );
+
+  const hover = sorted.map((row) => categorySlaHoverHtml(row, readinessByCategory?.get(row.category)));
   
   const maxTotal = sorted.length > 0 ? Math.max(...sorted.map((d) => d.total)) : 0;
   const volumeAxisMin = -maxTotal * 0.06;
   const markerSize = options?.markerSize ?? 9;
+  const maxPct = sorted.length > 0 ? Math.max(...sorted.map((d) => d.pct_met_sla)) : 100;
+  const slaXMax = Math.min(115, Math.max(102, Math.ceil(maxPct) + 5));
 
   return {
     bars: [{
       x: sorted.map(d => d.pct_met_sla),
-      y: sorted.map(d => d.category),
+      y: yLabels,
       orientation: 'h' as const,
       type: 'bar' as const,
       marker: { color: barColors },
@@ -381,7 +414,10 @@ export function slaCategorySummaryChart(
     }],
     volumeLines: [{
       x: sorted.flatMap((d) => [volumeAxisMin, d.total, null]),
-      y: sorted.flatMap((d) => [d.category, d.category, null]),
+      y: sorted.flatMap((d) => {
+        const label = categoryDisplayLabel(d.category, readinessByCategory);
+        return [label, label, null];
+      }),
       mode: 'lines' as const,
       type: 'scatter' as const,
       line: { color: 'rgba(0, 0, 0, 0.25)', width: 1 },
@@ -391,16 +427,18 @@ export function slaCategorySummaryChart(
     }],
     scatter: [{
       x: sorted.map(d => d.total),
-      y: sorted.map(d => d.category),
+      y: yLabels,
       mode: 'markers' as const,
       type: 'scatter' as const,
       marker: { symbol: 'diamond', size: markerSize, color: 'rgba(0, 0, 0, 0.9)' },
       name: 'Total Requests',
-      hovertemplate: '<b>%{y}</b><br>Total Requests: %{x:,}<extra></extra>',
+      customdata: sorted.map((d) => categorySlaHoverHtml(d, readinessByCategory?.get(d.category))),
+      hovertemplate: '%{customdata}<extra></extra>',
       xaxis: 'x2',
     }],
-    categories: sorted.map(d => d.category),
+    categories: yLabels,
     volumeAxisRange: [volumeAxisMin, maxTotal * 1.02] as [number, number],
+    slaXRange: [0, slaXMax] as [number, number],
   };
 }
 
@@ -928,5 +966,130 @@ export function complianceVsResolvedChart(
       },
     ],
     labels,
+  };
+}
+
+export interface CohortDispositionSegment {
+  key: CohortDispositionStackKey;
+  label: string;
+  count: number;
+  color: string;
+}
+
+export type CohortDispositionStackKey = 'met' | 'missed' | 'open_overdue' | 'open_within' | 'no_sla';
+
+const DISPOSITION_STACK_ORDER: CohortDispositionStackKey[] = [
+  'met',
+  'missed',
+  'open_overdue',
+  'open_within',
+  'no_sla',
+];
+
+/** Shared paper-y layout for the bar row and outcome marker callout below it. */
+export const COHORT_DISPOSITION_LAYOUT = {
+  full: {
+    barDomain: [0.40, 0.86] as [number, number],
+    labelBaselineY: 0.17,
+    labelXGap: 0.35,
+    height: { mobile: 132, desktop: 148 },
+    segmentMinPct: 5,
+    segmentFontSize: 10,
+    markerFontSize: 12,
+    markerLineWidth: 2,
+  },
+  mini: {
+    barDomain: [0, 1] as [number, number],
+    labelBaselineY: 0.18,
+    labelXGap: 0.45,
+    height: { mobile: 18, desktop: 18 },
+    segmentMinPct: 7,
+    segmentFontSize: 10,
+    markerFontSize: 9,
+    markerLineWidth: 1,
+  },
+} as const;
+
+/** Horizontal 100% stacked disposition bar with an SLA-colored outcome marker. */
+export function cohortDispositionChart(options: {
+  cohortLabel: string;
+  buckets: CohortDispositionSegment[];
+  total: number;
+  pctSlaOutcomeKnown: number;
+  isMobile?: boolean;
+  variant?: keyof typeof COHORT_DISPOSITION_LAYOUT;
+}) {
+  const {
+    cohortLabel,
+    buckets,
+    total,
+    pctSlaOutcomeKnown,
+    isMobile = false,
+    variant = 'full',
+  } = options;
+  const layout = COHORT_DISPOSITION_LAYOUT[variant];
+  const outcomeColor = slaOutcomeKnownColor(pctSlaOutcomeKnown);
+  const bucketByKey = new Map(buckets.map((b) => [b.key, b]));
+
+  const orderedBuckets = DISPOSITION_STACK_ORDER
+    .map((key) => bucketByKey.get(key))
+    .filter((b): b is CohortDispositionSegment => !!b && b.count > 0);
+
+  const traces = orderedBuckets.map((b) => {
+    const pct = total > 0 ? (b.count / total) * 100 : 0;
+    return {
+      name: b.label,
+      y: [cohortLabel],
+      x: [pct],
+      customdata: [[b.count]],
+      type: 'bar' as const,
+      orientation: 'h' as const,
+      marker: { color: b.color, line: { width: 0 } },
+      text: pct >= layout.segmentMinPct ? [`${pct.toFixed(1)}%`] : undefined,
+      textposition: 'inside' as const,
+      insidetextanchor: 'middle' as const,
+      insidetextfont: { color: '#ffffff', size: layout.segmentFontSize, family: fonts.mono },
+      hovertemplate: `${b.label}: %{x:.1f}% (%{customdata[0]:,})<extra></extra>`,
+      showlegend: false,
+    };
+  });
+
+  const { barDomain, labelBaselineY } = layout;
+  const barTop = barDomain[1];
+  const labelText = formatPctSlaOutcomeKnown(pctSlaOutcomeKnown);
+
+  const shapes: Array<Record<string, unknown>> = variant === 'mini' ? [] : [{
+    type: 'line',
+    xref: 'x',
+    yref: 'paper',
+    x0: pctSlaOutcomeKnown,
+    x1: pctSlaOutcomeKnown,
+    y0: barTop,
+    y1: labelBaselineY,
+    line: { color: outcomeColor, width: layout.markerLineWidth },
+  }];
+
+  const annotations: Array<Record<string, unknown>> = variant === 'mini' ? [] : [{
+    x: pctSlaOutcomeKnown,
+    y: labelBaselineY,
+    xref: 'x',
+    yref: 'paper',
+    text: labelText,
+    showarrow: false,
+    xanchor: 'right',
+    xshift: -3,
+    yanchor: 'bottom',
+    borderpad: 0,
+    borderwidth: 0,
+    font: { family: fonts.mono, size: layout.markerFontSize, color: outcomeColor },
+  }];
+
+  return {
+    traces,
+    shapes,
+    annotations,
+    outcomeColor,
+    barDomain,
+    height: isMobile ? layout.height.mobile : layout.height.desktop,
   };
 }

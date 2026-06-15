@@ -163,8 +163,10 @@ function percentile(arr: number[], p: number): number {
 export interface SLACategorySummary {
   category: string;
   total: number;
+  met: number;
   missed: number;
   overdue: number;
+  openWithin: number;
   good: number;
   pct_met_sla: number;
 }
@@ -175,31 +177,35 @@ export function includeInSlaSummary(total: number, hasSlaDueDate: boolean): bool
 }
 
 export function slaCategorySummary(slaRows: SLARow[]): SLACategorySummary[] {
-  const grouped = new Map<string, { total: number; missed: number; overdue: number }>();
-  
+  const grouped = new Map<string, { total: number; met: number; missed: number; overdue: number }>();
+
   for (const row of slaRows) {
     if (!grouped.has(row.category)) {
-      grouped.set(row.category, { total: 0, missed: 0, overdue: 0 });
+      grouped.set(row.category, { total: 0, met: 0, missed: 0, overdue: 0 });
     }
     const group = grouped.get(row.category)!;
     group.total += row.total;
+    group.met += row.met_sla_count;
     group.missed += row.missed_sla_count;
     group.overdue += row.open_past_sla_count;
   }
-  
+
   const result: SLACategorySummary[] = [];
   for (const [category, group] of grouped) {
-    const good = group.total - group.missed - group.overdue;
+    const openWithin = Math.max(0, group.total - group.met - group.missed - group.overdue);
+    const good = group.met + openWithin;
     const pct_met_sla = group.total > 0 ? (good / group.total) * 100 : 0;
     result.push({
       category,
       total: group.total,
+      met: group.met,
       missed: group.missed,
       overdue: group.overdue,
+      openWithin,
       good,
       pct_met_sla: Math.round(pct_met_sla * 10) / 10,
     });
   }
-  
+
   return result.sort((a, b) => a.pct_met_sla - b.pct_met_sla);
 }

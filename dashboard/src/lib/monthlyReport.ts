@@ -1,7 +1,9 @@
 import { DataDictionaries, DataShardMeta, RollupFile } from '../api/dataTypes';
 import { ProcessedRequest } from './dataProcessing';
-import { isImmatureCohort, pctSlaOutcomeKnown, slaOutcomeKnownLabel, SLA_OUTCOME_KNOWN_THRESHOLD, slaTone, slaVerdictLabel } from './overviewAnalytics';
+import { filingDayKey, cohortChartDays, filingMonthDays, filingMonthKey, parseUtcRowTimestamp, resolutionDayKey } from './filingDate';
+import { formatPctSlaOutcomeKnown, isImmatureCohort, pctSlaOutcomeKnown, slaOutcomeKnownLabel, SLA_OUTCOME_KNOWN_THRESHOLD, slaTone, slaVerdictLabel } from './overviewAnalytics';
 import { mergeSlaRollups } from './rollups';
+import { CATEGORICAL_COLORS, colors } from './theme';
 
 export interface DeltaValue {
   absolute: number;
@@ -38,6 +40,27 @@ export interface CategorySlaMonth {
   prevPctMetSla: number | null;
   delta: number | null;
   tone: 'success' | 'warning' | 'danger';
+}
+
+/** Green / orange / red band counts for mature categories; immature ones tracked separately. */
+export interface CategorySlaBandCounts {
+  success: number;
+  warning: number;
+  danger: number;
+  /** Mature categories included in the bands above. */
+  total: number;
+  /** Categories still within the SLA window — excluded from band counts. */
+  settling: number;
+}
+
+/** Per-category cohort reporting readiness for the filing month. */
+export interface CategoryReportingReadiness {
+  category: string;
+  total: number;
+  pctSlaOutcomeKnown: number;
+  immatureCohort: boolean;
+  /** Open tickets still within their SLA window — outcome not yet knowable. */
+  openWithin: number;
 }
 
 export interface Notable {
@@ -90,6 +113,22 @@ export interface CohortSettling {
 export interface CumulativeResolutionCurve {
   days: number[];
   pctClosed: number[];
+}
+
+export interface CohortFlowChart {
+  dayLabels: string[];
+  xTickVals: string[];
+  xTickText: string[];
+  traces: Array<{
+    x: string[];
+    y: number[];
+    customdata: number[];
+    name: string;
+    type: 'bar';
+    marker: { color: string; opacity?: number };
+    hovertemplate: string | string[];
+  }>;
+  hasData: boolean;
 }
 
 interface MonthAgg {
@@ -228,24 +267,29 @@ export function computeMonthlyScorecard(
   };
 }
 
-function categoryStatsFromRollup(file: RollupFile, dicts: DataDictionaries): Map<string, { total: number; pctMetSla: number }> {
+function categoryStatsFromRollup(
+  file: RollupFile,
+  dicts: DataDictionaries,
+): Map<string, { total: number; pctMetSla: number; immatureCohort: boolean }> {
   const slaRows = mergeSlaRollups([file], dicts);
-  const stats = new Map<string, { total: number; missed: number; overdue: number }>();
+  const stats = new Map<string, { total: number; met: number; missed: number; overdue: number }>();
 
   for (const row of slaRows) {
-    const existing = stats.get(row.category) ?? { total: 0, missed: 0, overdue: 0 };
+    const existing = stats.get(row.category) ?? { total: 0, met: 0, missed: 0, overdue: 0 };
     existing.total += row.total;
+    existing.met += row.met_sla_count;
     existing.missed += row.missed_sla_count;
     existing.overdue += row.open_past_sla_count;
     stats.set(row.category, existing);
   }
 
-  const result = new Map<string, { total: number; pctMetSla: number }>();
+  const result = new Map<string, { total: number; pctMetSla: number; immatureCohort: boolean }>();
   for (const [category, s] of stats) {
     const good = s.total - s.missed - s.overdue;
     result.set(category, {
       total: s.total,
       pctMetSla: s.total > 0 ? round1((good / s.total) * 100) : 0,
+      immatureCohort: isImmatureCohort(s.total, s.met, s.missed, s.overdue),
     });
   }
   return result;
@@ -282,6 +326,58 @@ export function computeCategorySlaForMonth(
       };
     })
     .sort((a, b) => a.pctMetSla - b.pctMetSla);
+}
+
+/** Counts mature filing-month categories by SLA band (≥99%, 95–98.9%, <95%). */
+export function computeCategorySlaBandCounts(
+  file: RollupFile,
+  dicts: DataDictionaries,
+): CategorySlaBandCounts {
+  const stats = categoryStatsFromRollup(file, dicts);
+  const counts: CategorySlaBandCounts = { success: 0, warning: 0, danger: 0, total: 0, settling: 0 };
+
+  for (const { pctMetSla, immatureCohort } of stats.values()) {
+    if (immatureCohort) {
+      counts.settling += 1;
+      continue;
+    }
+    counts.total += 1;
+    const tone = slaTone(pctMetSla);
+    counts[tone] += 1;
+  }
+
+  return counts;
+}
+
+/** Reporting readiness by category — share with closed or past-SLA outcome. */
+export function computeCategoryReportingReadiness(
+  file: RollupFile,
+  dicts: DataDictionaries,
+): CategoryReportingReadiness[] {
+  const slaRows = mergeSlaRollups([file], dicts);
+  const stats = new Map<string, { total: number; met: number; missed: number; overdue: number }>();
+
+  for (const row of slaRows) {
+    const existing = stats.get(row.category) ?? { total: 0, met: 0, missed: 0, overdue: 0 };
+    existing.total += row.total;
+    existing.met += row.met_sla_count;
+    existing.missed += row.missed_sla_count;
+    existing.overdue += row.open_past_sla_count;
+    stats.set(row.category, existing);
+  }
+
+  return Array.from(stats.entries())
+    .map(([category, s]) => {
+      const openWithin = Math.max(0, s.total - s.met - s.missed - s.overdue);
+      return {
+        category,
+        total: s.total,
+        pctSlaOutcomeKnown: pctSlaOutcomeKnown(s.total, s.met, s.missed, s.overdue),
+        immatureCohort: isImmatureCohort(s.total, s.met, s.missed, s.overdue),
+        openWithin,
+      };
+    })
+    .sort((a, b) => a.category.localeCompare(b.category));
 }
 
 function openTotalFromRollup(file: RollupFile): number {
@@ -414,6 +510,115 @@ export function computeVolumeSummary(
   return { topServiceTypes, weeklyTotals };
 }
 
+export interface DailyVolumeByCategory {
+  dayLabels: string[];
+  xTickVals: string[];
+  xTickText: string[];
+  traces: Array<{
+    x: string[];
+    y: number[];
+    name: string;
+    type: 'bar';
+    marker: { color: string };
+    hovertemplate: string[];
+  }>;
+}
+
+/** Sparse x-axis ticks for a month of daily bars — day numbers only. */
+function dailyVolumeAxisTicks(dayLabels: string[]): { xTickVals: string[]; xTickText: string[] } {
+  const step = dayLabels.length <= 14 ? 2 : dayLabels.length <= 21 ? 3 : 5;
+  const xTickVals: string[] = [];
+  const xTickText: string[] = [];
+
+  for (let i = 0; i < dayLabels.length; i += 1) {
+    const isFirst = i === 0;
+    const isLast = i === dayLabels.length - 1;
+    const isInterval = i % step === 0;
+    if (isFirst || isLast || isInterval) {
+      xTickVals.push(dayLabels[i]);
+      xTickText.push(String(i + 1));
+    }
+  }
+
+  return { xTickVals, xTickText };
+}
+
+/** Sparse x-axis ticks for cohort flow — day numbers in-month, dates in follow-up. */
+function cohortFlowAxisTicks(
+  dayLabels: string[],
+  filingMonthDayCount: number,
+): { xTickVals: string[]; xTickText: string[] } {
+  const step = dayLabels.length <= 31 ? 5 : dayLabels.length <= 62 ? 7 : 14;
+  const xTickVals: string[] = [];
+  const xTickText: string[] = [];
+
+  for (let i = 0; i < dayLabels.length; i += 1) {
+    const isFirst = i === 0;
+    const isMonthEnd = i === filingMonthDayCount - 1;
+    const isLast = i === dayLabels.length - 1;
+    const isInterval = i % step === 0;
+    if (isFirst || isMonthEnd || isLast || isInterval) {
+      xTickVals.push(dayLabels[i]);
+      xTickText.push(i < filingMonthDayCount ? String(i + 1) : dayLabels[i]);
+    }
+  }
+
+  return { xTickVals, xTickText };
+}
+
+/** Stacked daily filing volume by category for one report month. */
+export function computeDailyVolumeByCategory(
+  rows: ProcessedRequest[],
+  month: string,
+): DailyVolumeByCategory {
+  const monthDays = filingMonthDays(month);
+  const dayKeys = monthDays.map((day) => day.key);
+  const dayLabels = monthDays.map((day) => day.label);
+  const { xTickVals, xTickText } = dailyVolumeAxisTicks(dayLabels);
+
+  const dayCat = new Map<string, Map<string, number>>();
+  for (const key of dayKeys) {
+    dayCat.set(key, new Map());
+  }
+
+  for (const row of rows) {
+    if (filingMonthKey(row.date) !== month) continue;
+    const key = filingDayKey(row.date);
+    const catMap = dayCat.get(key);
+    if (!catMap) continue;
+    catMap.set(row.category, (catMap.get(row.category) ?? 0) + 1);
+  }
+
+  const categoryTotals = new Map<string, number>();
+  for (const catMap of dayCat.values()) {
+    for (const [category, count] of catMap.entries()) {
+      categoryTotals.set(category, (categoryTotals.get(category) ?? 0) + count);
+    }
+  }
+
+  const categories = Array.from(categoryTotals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([category]) => category);
+
+  const traces = categories.map((category, index) => {
+    const y = dayKeys.map((key) => dayCat.get(key)?.get(category) ?? 0);
+    return {
+      x: dayLabels,
+      y,
+      name: category,
+      type: 'bar' as const,
+      marker: { color: CATEGORICAL_COLORS[index % CATEGORICAL_COLORS.length] },
+      hovertemplate: y.map((count) => (
+        count > 0
+          ? '<b>%{fullData.name}</b>: %{y:,}<extra></extra>'
+          : '<extra></extra>'
+      )),
+    };
+  });
+
+  return { dayLabels, xTickVals, xTickText, traces };
+}
+
 /** SLA status colors aligned with the SLA status map. */
 const DISPOSITION_COLORS: Record<CohortDispositionBucket['key'], string> = {
   met: '#2ecc71',
@@ -424,16 +629,20 @@ const DISPOSITION_COLORS: Record<CohortDispositionBucket['key'], string> = {
 };
 
 const DISPOSITION_LABELS: Record<CohortDispositionBucket['key'], string> = {
-  met: 'Resolved on time',
-  missed: 'Resolved late',
+  met: 'Resolved in SLA',
+  missed: 'Resolved out of SLA',
   open_within: 'Open within SLA',
-  open_overdue: 'Open overdue',
+  open_overdue: 'Open out of SLA',
   no_sla: 'No SLA defined',
 };
 
-function filingMonthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-}
+export const COHORT_DISPOSITION_STACK_ORDER: CohortDispositionBucket['key'][] = [
+  'met',
+  'missed',
+  'open_overdue',
+  'open_within',
+  'no_sla',
+];
 
 /** Weighted percentile of SLA deadlines across service types in a filing month. */
 function weightedSlaPercentile(rollup: RollupFile, pct: number): number {
@@ -492,13 +701,7 @@ export function computeCohortDisposition(rollup: RollupFile): CohortDispositionB
     no_sla: noSla,
   };
 
-  const order: CohortDispositionBucket['key'][] = [
-    'met',
-    'open_within',
-    'missed',
-    'open_overdue',
-    'no_sla',
-  ];
+  const order = COHORT_DISPOSITION_STACK_ORDER;
 
   return order
     .map((key) => ({
@@ -544,6 +747,24 @@ export function computeCohortSettling(rollup: RollupFile, dicts: DataDictionarie
   };
 }
 
+/** Max day axis for a filing cohort's completion curve. */
+function cohortCurveMax(rows: ProcessedRequest[]): number {
+  const closedDays = rows
+    .filter((r) => r.is_closed && r.resolution_days !== null && r.resolution_days >= 0)
+    .map((r) => r.resolution_days!);
+  const maxOpenAge = rows
+    .filter((r) => r.is_open)
+    .reduce((max, r) => Math.max(max, r.age_days), 0);
+
+  return Math.min(
+    120,
+    Math.max(
+      closedDays.length > 0 ? Math.ceil(Math.max(...closedDays)) : 0,
+      Math.ceil(maxOpenAge),
+    ),
+  );
+}
+
 /** Share of a filing-month cohort closed by days since filing. */
 export function computeCumulativeResolutionCurve(
   rows: ProcessedRequest[],
@@ -557,18 +778,7 @@ export function computeCumulativeResolutionCurve(
     .filter((r) => r.is_closed && r.resolution_days !== null && r.resolution_days >= 0)
     .map((r) => r.resolution_days!);
 
-  const maxOpenAge = cohort
-    .filter((r) => r.is_open)
-    .reduce((max, r) => Math.max(max, r.age_days), 0);
-
-  const curveMax = Math.min(
-    120,
-    Math.max(
-      closedDays.length > 0 ? Math.ceil(Math.max(...closedDays)) : 0,
-      Math.ceil(maxOpenAge),
-    ),
-  );
-
+  const curveMax = cohortCurveMax(cohort);
   const days: number[] = [];
   const pctClosed: number[] = [];
   for (let d = 0; d <= curveMax; d++) {
@@ -580,6 +790,139 @@ export function computeCumulativeResolutionCurve(
   return { days, pctClosed };
 }
 
+/** SLA window in days from filing to due date; null when no due date. */
+function slaWindowDays(row: ProcessedRequest): number | null {
+  if (!row.SERVICEDUEDATE) return null;
+  const due = parseUtcRowTimestamp(row.SERVICEDUEDATE);
+  const windowMs = due.getTime() - row.date.getTime();
+  if (windowMs < 0) return null;
+  return windowMs / 86400000;
+}
+
+/** Age in whole days at end of a UTC calendar day. */
+function ageDaysOnDay(filedDate: Date, dayKey: string): number {
+  const [year, mon, day] = dayKey.split('-').map(Number);
+  const endOfDay = Date.UTC(year, mon - 1, day, 23, 59, 59, 999);
+  return Math.floor((endOfDay - filedDate.getTime()) / 86400000);
+}
+
+/** Whether an open request is past its SLA deadline on a calendar day. */
+function isPastSlaOnDay(row: ProcessedRequest, dayKey: string): boolean {
+  const slaDays = slaWindowDays(row);
+  if (slaDays === null) return false;
+  return ageDaysOnDay(row.date, dayKey) > slaDays;
+}
+
+/** Whether a request is closed by end of a calendar day. */
+function isResolvedByDay(row: ProcessedRequest, dayKey: string, asOfKey: string): boolean {
+  const resolvedKey = resolutionDayKey(row);
+  return resolvedKey !== null && resolvedKey <= dayKey && resolvedKey <= asOfKey;
+}
+
+/** Cumulative resolved and open totals for a filing-month cohort on calendar days. */
+export function computeCohortFlow(
+  rows: ProcessedRequest[],
+  month: string,
+  asOf: Date = new Date(),
+): CohortFlowChart {
+  const monthDays = filingMonthDays(month);
+  const chartDays = cohortChartDays(month);
+  const asOfKey = filingDayKey(asOf);
+  const visibleDays = chartDays.filter((day) => day.key <= asOfKey);
+
+  if (visibleDays.length === 0) {
+    return { dayLabels: [], xTickVals: [], xTickText: [], traces: [], hasData: false };
+  }
+
+  const dayLabels = visibleDays.map((day) => day.label);
+  const visibleMonthDayCount = monthDays.filter((day) => day.key <= asOfKey).length;
+  const { xTickVals, xTickText } = cohortFlowAxisTicks(dayLabels, visibleMonthDayCount);
+  const visibleCount = visibleDays.length;
+
+  const cohort = rows.filter((r) => filingMonthKey(r.date) === month);
+  if (cohort.length === 0) {
+    return { dayLabels, xTickVals, xTickText, traces: [], hasData: false };
+  }
+
+  const cumulativeResolved: number[] = [];
+  const cumulativeOpenWithin: number[] = [];
+  const cumulativeOpenPast: number[] = [];
+
+  for (let dayIdx = 0; dayIdx < visibleCount; dayIdx += 1) {
+    const dayKey = visibleDays[dayIdx].key;
+    let resolved = 0;
+    let openWithin = 0;
+    let openPast = 0;
+
+    for (const row of cohort) {
+      if (filingDayKey(row.date) > dayKey) continue;
+      if (isResolvedByDay(row, dayKey, asOfKey)) {
+        resolved++;
+      } else if (isPastSlaOnDay(row, dayKey)) {
+        openPast++;
+      } else {
+        openWithin++;
+      }
+    }
+
+    cumulativeResolved.push(resolved);
+    cumulativeOpenWithin.push(openWithin);
+    cumulativeOpenPast.push(openPast);
+  }
+
+  const cumulativeFiled = cumulativeResolved.map(
+    (resolved, idx) => resolved + cumulativeOpenWithin[idx] + cumulativeOpenPast[idx],
+  );
+  const pctOfFiled = (count: number, idx: number) => (
+    cumulativeFiled[idx] > 0 ? round1((count / cumulativeFiled[idx]) * 100) : 0
+  );
+
+  const traces = [
+    {
+      x: dayLabels,
+      y: cumulativeResolved,
+      customdata: cumulativeResolved.map((count, idx) => pctOfFiled(count, idx)),
+      name: 'Resolved',
+      type: 'bar' as const,
+      marker: { color: colors.success },
+      hovertemplate: cumulativeResolved.map((count) => (
+        count > 0
+          ? 'Resolved: %{y:,} (%{customdata:.1f}%)<extra></extra>'
+          : '<extra></extra>'
+      )),
+    },
+    {
+      x: dayLabels,
+      y: cumulativeOpenWithin,
+      customdata: cumulativeOpenWithin.map((count, idx) => pctOfFiled(count, idx)),
+      name: 'Open within SLA',
+      type: 'bar' as const,
+      marker: { color: DISPOSITION_COLORS.open_within, opacity: 0.85 },
+      hovertemplate: cumulativeOpenWithin.map((count) => (
+        count > 0
+          ? 'Open within SLA: %{y:,} (%{customdata:.1f}%)<extra></extra>'
+          : '<extra></extra>'
+      )),
+    },
+    {
+      x: dayLabels,
+      y: cumulativeOpenPast,
+      customdata: cumulativeOpenPast.map((count, idx) => pctOfFiled(count, idx)),
+      name: 'Open past SLA',
+      type: 'bar' as const,
+      marker: { color: DISPOSITION_COLORS.open_overdue },
+      hovertemplate: cumulativeOpenPast.map((count) => (
+        count > 0
+          ? 'Open past SLA: %{y:,} (%{customdata:.1f}%)<extra></extra>'
+          : '<extra></extra>'
+      )),
+    },
+  ];
+
+  return { dayLabels, xTickVals, xTickText, traces, hasData: true };
+}
+
+/** Open-request age distribution at month end. */
 export function computeBacklogSnapshot(
   rows: ProcessedRequest[],
   prevOpenTotal: number | null,
@@ -617,6 +960,21 @@ export function computeBacklogSnapshot(
   return { buckets, total, prevTotal: prevOpenTotal, delta };
 }
 
+/** Formats cohort outcome-known stability for the scorecard. */
+export function formatOutcomeKnownScorecardKpi(
+  pctSlaOutcomeKnown: number,
+  immatureCohort: boolean,
+): ScorecardKpiDisplay {
+  const tone = immatureCohort ? 'warning' : 'success';
+  const detail = immatureCohort ? SCORECARD_SETTLING_DETAIL : 'Stable for reporting';
+
+  return {
+    value: formatPctSlaOutcomeKnown(pctSlaOutcomeKnown),
+    detail,
+    tone,
+  };
+}
+
 /** Formats resolution rate as a share of this month's filings. */
 export function formatResolvedScorecardKpi(
   resolved: number,
@@ -645,13 +1003,153 @@ export interface ScorecardKpiDisplay {
   tone: 'default' | 'success' | 'warning' | 'danger';
 }
 
+/** Short scorecard KPI definitions for the label (i) tooltips. */
+export const SCORECARD_KPI_INFO = {
+  pctMetSla:
+    'This month\u2019s SLA compliance: share resolved on time and verdict vs the 99% target. Below 95%, misses become noticeable.',
+  requestsFiled:
+    'This month\u2019s volume and resolution progress \u2014 how many requests opened and how much of the cohort has closed.',
+  categoriesBySla:
+    'How mature categories split across the 99% target, slipping (95\u201399%), and below 95%, plus any still within the SLA window.',
+  reportingReadiness:
+    `Whether this month\u2019s cohort has settled enough to trust compliance. Expect \u2265${SLA_OUTCOME_KNOWN_THRESHOLD}% with a final SLA outcome; the bar shows where the rest stand.`,
+} as const;
+
+const SCORECARD_SETTLING_DETAIL = 'Data still settling';
+
 /** Formats % Met SLA with a this-month performance verdict, not MoM. */
-export function formatSlaScorecardKpi(pctMetSla: number): ScorecardKpiDisplay {
+export function formatSlaScorecardKpi(pctMetSla: number, immatureCohort = false): ScorecardKpiDisplay {
   const verdict = slaVerdictLabel(pctMetSla);
   return {
     value: `${pctMetSla}%`,
-    detail: verdict.label,
-    tone: verdict.tone,
+    detail: immatureCohort ? SCORECARD_SETTLING_DETAIL : verdict.label,
+    tone: immatureCohort ? 'warning' : verdict.tone,
+  };
+}
+
+/** Net MoM score: gains in meeting bands minus losses to slipping/below. */
+export function computeCategorySlaBandMoMScore(
+  current: CategorySlaBandCounts,
+  prev: CategorySlaBandCounts,
+): number {
+  const successDelta = current.success - prev.success;
+  const warningDelta = current.warning - prev.warning;
+  const dangerDelta = current.danger - prev.danger;
+  return successDelta - warningDelta - dangerDelta;
+}
+
+type CategorySlaBandMoMVerdict = 'much_better' | 'better' | 'same' | 'worse' | 'much_worse';
+
+/** Maps a band-change score to a short scorecard verdict. */
+export function categorySlaBandMoMVerdict(score: number): {
+  key: CategorySlaBandMoMVerdict;
+  label: string;
+  tone: ScorecardKpiDisplay['tone'];
+} {
+  if (score >= 2) {
+    return { key: 'much_better', label: 'Clear improvement', tone: 'success' };
+  }
+  if (score === 1) {
+    return { key: 'better', label: 'Gaining ground', tone: 'success' };
+  }
+  if (score === 0) {
+    return { key: 'same', label: 'Holding steady', tone: 'default' };
+  }
+  if (score === -1) {
+    return { key: 'worse', label: 'Losing ground', tone: 'warning' };
+  }
+  return { key: 'much_worse', label: 'Clear setback', tone: 'danger' };
+}
+
+function categorySettlingDetail(count: number): string {
+  return count === 1 ? '1 settling' : `${count} settling`;
+}
+
+/** Formats category SLA band counts with a MoM mix judgment. */
+export function formatCategorySlaBandsScorecardKpi(
+  current: CategorySlaBandCounts,
+  prev: CategorySlaBandCounts | null,
+): ScorecardKpiDisplay {
+  const value = `${current.success} · ${current.warning} · ${current.danger}`;
+  const settlingNote = current.settling > 0 ? categorySettlingDetail(current.settling) : null;
+
+  if (!prev) {
+    return {
+      value,
+      detail: settlingNote ?? `${current.total} with SLA data`,
+      tone: settlingNote ? 'warning' : 'default',
+    };
+  }
+
+  const verdict = categorySlaBandMoMVerdict(computeCategorySlaBandMoMScore(current, prev));
+  const momDetail = `${verdict.label} vs last month`;
+
+  return {
+    value,
+    detail: settlingNote ? `${settlingNote} · ${momDetail}` : momDetail,
+    tone: settlingNote ? 'warning' : verdict.tone,
+  };
+}
+
+/** Plain-language summary of category SLA band counts for display and assistive tech. */
+export function formatCategorySlaBandAccessibleSummary(
+  counts: CategorySlaBandCounts,
+  prev: CategorySlaBandCounts | null = null,
+): string {
+  if (counts.total === 0 && counts.settling === 0) return 'No categories with SLA data';
+
+  const parts: string[] = [];
+  if (counts.success > 0) {
+    parts.push(`${counts.success} meeting expectations`);
+  }
+  if (counts.warning > 0) {
+    parts.push(`${counts.warning} slipping`);
+  }
+  if (counts.danger > 0) {
+    parts.push(`${counts.danger} below expectations`);
+  }
+  if (counts.settling > 0) {
+    parts.push(`${counts.settling} still within SLA window`);
+  }
+
+  const mix = parts.join(', ');
+  if (!prev) return mix;
+
+  const verdict = categorySlaBandMoMVerdict(computeCategorySlaBandMoMScore(counts, prev));
+  return `${mix}. ${verdict.label} vs last month.`;
+}
+
+/** Plain-language summary of a cohort disposition bar for assistive tech. */
+export function formatCohortDispositionAccessibleSummary(
+  buckets: CohortDispositionBucket[],
+  total: number,
+  pctSlaOutcomeKnown: number,
+): string {
+  if (total === 0) return 'No requests in cohort';
+
+  const mix = buckets
+    .map((b) => {
+      const pct = round1((b.count / total) * 100);
+      return `${b.label} ${pct}%`;
+    })
+    .join(', ');
+
+  return `${mix}. ${formatPctSlaOutcomeKnown(pctSlaOutcomeKnown)} outcomes known.`;
+}
+
+/** Formats filing volume with cohort resolution progress. */
+export function formatFiledScorecardKpi(totalFiled: number, totalResolved: number): ScorecardKpiDisplay {
+  if (totalFiled === 0) {
+    return { value: '0', detail: 'No filings this month', tone: 'default' };
+  }
+
+  const pctResolved = round1((totalResolved / totalFiled) * 100);
+  const remaining = Math.max(0, totalFiled - totalResolved);
+
+  return {
+    value: totalFiled.toLocaleString('en-US'),
+    detail: `${pctResolved}% resolved, ${remaining.toLocaleString('en-US')} left to go`,
+    tone: 'default',
   };
 }
 

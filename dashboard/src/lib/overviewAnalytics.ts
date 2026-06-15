@@ -1,5 +1,6 @@
 import { DataDictionaries, RollupFile } from '../api/dataTypes';
 import { SLARow, slaCategorySummary, ProcessedRequest } from './dataProcessing';
+import { filingMonthKey } from './filingDate';
 import { mergeSlaRollups } from './rollups';
 import { colors } from './theme';
 
@@ -137,7 +138,8 @@ export const PERCEPTIBILITY_RESIDENT_CATEGORIES = [
 ] as const;
 
 // Cohorts below this share of closed-or-past-deadline tickets are flagged provisional.
-export const SLA_OUTCOME_KNOWN_THRESHOLD = 99;
+export const SLA_OUTCOME_UNKNOWN_ALLOWANCE_PCT = 2.5;
+export const SLA_OUTCOME_KNOWN_THRESHOLD = 100 - SLA_OUTCOME_UNKNOWN_ALLOWANCE_PCT;
 
 /** Share of cohort where SLA outcome is knowable: closed (on time or late) or open past deadline. */
 export function pctSlaOutcomeKnown(total: number, met: number, missed: number, overdue: number): number {
@@ -145,14 +147,27 @@ export function pctSlaOutcomeKnown(total: number, met: number, missed: number, o
   return round1(((met + missed + overdue) / total) * 100);
 }
 
+/** Consistent one-decimal display for outcome-known percentages. */
+export function formatPctSlaOutcomeKnown(pct: number): string {
+  return `${round1(pct)}%`;
+}
+
 /** Plain-language line for the cohort disposition reporting-readiness metric. */
 export function slaOutcomeKnownLabel(pct: number): string {
-  return `${pct}% closed or past SLA deadline`;
+  return `${formatPctSlaOutcomeKnown(pct)} closed or past SLA deadline`;
 }
 
 /** True when too many tickets are still within their SLA window for stable reporting. */
 export function isImmatureCohort(total: number, met: number, missed: number, overdue: number): boolean {
   return total > 0 && pctSlaOutcomeKnown(total, met, missed, overdue) < SLA_OUTCOME_KNOWN_THRESHOLD;
+}
+
+/** Fill color for outcome-known share; stable reporting starts at the maturity threshold. */
+export function slaOutcomeKnownColor(pct: number): string {
+  if (pct >= SLA_OUTCOME_KNOWN_THRESHOLD) return colors.success;
+  if (pct >= 95) return colors.warning;
+  const severity = Math.max(0, Math.min(1, (95 - pct) / (95 - BELOW_TARGET_FLOOR)));
+  return mixHex(colors.danger, colors.primaryDeep, severity);
 }
 
 /** Service types omitted from the compliance-vs-resolution chart. */
@@ -265,10 +280,6 @@ const EMPTY_MONTH_BUCKET: MonthCategoryBucket = {
   open: 0,
   resolved: 0,
 };
-
-function filingMonthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-}
 
 function parseDueDate(dateStr: string | null): Date | null {
   if (!dateStr) return null;

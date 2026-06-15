@@ -64,8 +64,8 @@ export function mergePlotlyLayout(layout: Record<string, unknown>): Record<strin
   const merged: Record<string, unknown> = {
     ...plotlyLayoutDefaults,
     ...clean,
-    paper_bgcolor: colors.surface,
-    plot_bgcolor: colors.surfaceMuted,
+    paper_bgcolor: clean.paper_bgcolor ?? colors.surface,
+    plot_bgcolor: clean.plot_bgcolor ?? colors.surfaceMuted,
     font: { ...plotlyLayoutDefaults.font, ...(clean.font as object) },
     xaxis: mergeAxis(plotlyLayoutDefaults.xaxis as Record<string, unknown>, clean.xaxis as Record<string, unknown>),
     yaxis: mergeAxis(plotlyLayoutDefaults.yaxis as Record<string, unknown>, clean.yaxis as Record<string, unknown>),

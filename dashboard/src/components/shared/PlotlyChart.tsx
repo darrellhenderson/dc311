@@ -1,5 +1,5 @@
 import React, { Suspense, useMemo } from 'react';
-import type { Data } from 'plotly.js';
+import type { Data, PlotMouseEvent } from 'plotly.js';
 import { mergePlotlyLayout } from './plotlyLayout';
 
 /** Vite 8 may resolve the CJS default to the module wrapper instead of the component. */
@@ -26,6 +26,8 @@ interface PlotlyChartProps {
   remountKey?: string;
   /** Dual-axis bar charts need fixed sizing to keep colored bars on drag-resize. */
   preserveTracesOnResize?: boolean;
+  onHover?: (event: Readonly<PlotMouseEvent>) => void;
+  onUnhover?: (event: Readonly<PlotMouseEvent>) => void;
 }
 
 
@@ -36,6 +38,8 @@ function PlotlyChart({
   style,
   remountKey,
   preserveTracesOnResize = false,
+  onHover,
+  onUnhover,
 }: PlotlyChartProps) {
   const plotHeight = typeof layout.height === 'number' ? layout.height : 300;
   const fillWidth = !preserveTracesOnResize;
@@ -70,6 +74,8 @@ function PlotlyChart({
           config={defaultConfig}
           useResizeHandler
           style={{ width: '100%', height: plotHeight }}
+          onHover={onHover}
+          onUnhover={onUnhover}
         />
       </Suspense>
     </div>

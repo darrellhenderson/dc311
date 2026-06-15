@@ -105,6 +105,14 @@ export function stackedBarMargin(isMobile: boolean) {
   return { t: 56, b: isMobile ? 84 : 72, l: isMobile ? 48 : 56, r: 20 };
 }
 
+/** One combined tooltip for stacked bars — day or category on top, series below. */
+export function unifiedStackHover() {
+  return {
+    hovermode: 'x unified' as const,
+    hoverlabel: { namelength: -1 },
+  };
+}
+
 export function pieMargin() {
   return { t: 48, b: 24, l: 16, r: 16 };
 }

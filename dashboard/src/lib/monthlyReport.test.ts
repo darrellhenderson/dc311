@@ -3,15 +3,24 @@ import { DataDictionaries, DataShardMeta, RollupFile, SlaRollupRow } from '../ap
 import { ProcessedRequest } from './dataProcessing';
 import {
   computeBacklogSnapshot,
+  computeCategorySlaBandCounts,
+  computeCategoryReportingReadiness,
+  computeCategorySlaBandMoMScore,
+  categorySlaBandMoMVerdict,
   computeCategorySlaForMonth,
   computeCohortDisposition,
   computeCohortSettling,
   computeCumulativeResolutionCurve,
+  computeCohortFlow,
+  computeDailyVolumeByCategory,
   computeMonthlyScorecard,
   detectNotables,
   findPrevMonth,
   findYoyMonth,
+  formatFiledScorecardKpi,
   formatResolvedScorecardKpi,
+  formatCategorySlaBandAccessibleSummary,
+  formatCategorySlaBandsScorecardKpi,
   formatSlaScorecardKpi,
   formatScorecardKpi,
   getAvailableMonths,
@@ -275,6 +284,211 @@ describe('computeCategorySlaForMonth', () => {
   });
 });
 
+describe('computeCategorySlaBandCounts', () => {
+  it('counts categories by SLA band', () => {
+    const dicts: DataDictionaries = {
+      ...mockDicts(),
+      serviceTypes: ['Pothole', 'Tree trim', 'Road crack'],
+      categories: ['Sanitation & Dumping', 'Trees & Canopy', 'Roads & Transport'],
+    };
+    const rollup = mockRollup('2025-05', {
+      sla: [
+        mockSlaRow({ serviceType: 0, category: 0, total: 100, missed_sla_count: 0, open_past_sla_count: 0 }),
+        mockSlaRow({ serviceType: 1, category: 1, total: 100, missed_sla_count: 4, open_past_sla_count: 0 }),
+        mockSlaRow({ serviceType: 2, category: 2, total: 100, missed_sla_count: 8, open_past_sla_count: 0 }),
+      ],
+    });
+
+    expect(computeCategorySlaBandCounts(rollup, dicts)).toEqual({
+      success: 1,
+      warning: 1,
+      danger: 1,
+      total: 3,
+      settling: 0,
+    });
+  });
+
+  it('excludes immature categories from bands and counts them as settling', () => {
+    const dicts: DataDictionaries = {
+      ...mockDicts(),
+      serviceTypes: ['Pothole', 'Tree trim'],
+      categories: ['Sanitation & Dumping', 'Trees & Canopy'],
+    };
+    const rollup = mockRollup('2025-05', {
+      sla: [
+        mockSlaRow({
+          serviceType: 0,
+          category: 0,
+          total: 100,
+          met_sla_count: 99,
+          missed_sla_count: 0,
+          open_past_sla_count: 0,
+          closed: 99,
+        }),
+        mockSlaRow({
+          serviceType: 1,
+          category: 1,
+          total: 100,
+          met_sla_count: 70,
+          missed_sla_count: 10,
+          open_past_sla_count: 10,
+        }),
+      ],
+    });
+
+    expect(computeCategorySlaBandCounts(rollup, dicts)).toEqual({
+      success: 1,
+      warning: 0,
+      danger: 0,
+      total: 1,
+      settling: 1,
+    });
+  });
+});
+
+describe('computeCategoryReportingReadiness', () => {
+  it('computes outcome-known share and immaturity per category', () => {
+    const dicts: DataDictionaries = {
+      ...mockDicts(),
+      serviceTypes: ['Pothole', 'Tree trim'],
+      categories: ['Sanitation & Dumping', 'Trees & Canopy'],
+    };
+    const rollup = mockRollup('2025-05', {
+      sla: [
+        mockSlaRow({
+          serviceType: 0,
+          category: 0,
+          total: 100,
+          met_sla_count: 70,
+          missed_sla_count: 10,
+          open_past_sla_count: 10,
+        }),
+        mockSlaRow({
+          serviceType: 1,
+          category: 1,
+          total: 100,
+          met_sla_count: 96,
+          missed_sla_count: 2,
+          open_past_sla_count: 1,
+        }),
+      ],
+    });
+
+    expect(computeCategoryReportingReadiness(rollup, dicts)).toEqual([
+      {
+        category: 'Sanitation & Dumping',
+        total: 100,
+        pctSlaOutcomeKnown: 90,
+        immatureCohort: true,
+        openWithin: 10,
+      },
+      {
+        category: 'Trees & Canopy',
+        total: 100,
+        pctSlaOutcomeKnown: 99,
+        immatureCohort: false,
+        openWithin: 1,
+      },
+    ]);
+  });
+});
+
+describe('computeCategorySlaBandMoMScore', () => {
+  it('weights meeting gains and below losses', () => {
+    const current = { success: 2, warning: 1, danger: 1, total: 4, settling: 0 };
+    const prev = { success: 3, warning: 1, danger: 0, total: 4, settling: 0 };
+    expect(computeCategorySlaBandMoMScore(current, prev)).toBe(-2);
+  });
+
+  it('treats slipping growth as negative', () => {
+    const current = { success: 2, warning: 2, danger: 0, total: 4, settling: 0 };
+    const prev = { success: 2, warning: 1, danger: 1, total: 4, settling: 0 };
+    expect(computeCategorySlaBandMoMScore(current, prev)).toBe(0);
+  });
+});
+
+describe('categorySlaBandMoMVerdict', () => {
+  it('maps scores to five verdict bands', () => {
+    expect(categorySlaBandMoMVerdict(2).label).toBe('Clear improvement');
+    expect(categorySlaBandMoMVerdict(1).label).toBe('Gaining ground');
+    expect(categorySlaBandMoMVerdict(0).label).toBe('Holding steady');
+    expect(categorySlaBandMoMVerdict(-1).label).toBe('Losing ground');
+    expect(categorySlaBandMoMVerdict(-3).label).toBe('Clear setback');
+  });
+});
+
+describe('formatCategorySlaBandsScorecardKpi', () => {
+  const current = { success: 2, warning: 1, danger: 1, total: 4, settling: 0 };
+
+  it('describes the mix when no prior month exists', () => {
+    expect(formatCategorySlaBandsScorecardKpi(current, null)).toEqual({
+      value: '2 · 1 · 1',
+      detail: '4 with SLA data',
+      tone: 'default',
+    });
+  });
+
+  it('summarizes a clear setback when red bands grow', () => {
+    expect(formatCategorySlaBandsScorecardKpi(current, { success: 3, warning: 1, danger: 0, total: 4, settling: 0 })).toEqual({
+      value: '2 · 1 · 1',
+      detail: 'Clear setback vs last month',
+      tone: 'danger',
+    });
+  });
+
+  it('summarizes improvement when red bands shrink', () => {
+    expect(formatCategorySlaBandsScorecardKpi(current, { success: 1, warning: 1, danger: 2, total: 4, settling: 0 })).toEqual({
+      value: '2 · 1 · 1',
+      detail: 'Clear improvement vs last month',
+      tone: 'success',
+    });
+  });
+
+  it('reads steady when the mix is unchanged', () => {
+    expect(formatCategorySlaBandsScorecardKpi(current, current)).toEqual({
+      value: '2 · 1 · 1',
+      detail: 'Holding steady vs last month',
+      tone: 'default',
+    });
+  });
+
+  it('notes settling categories alongside MoM judgment', () => {
+    expect(formatCategorySlaBandsScorecardKpi(
+      { success: 2, warning: 1, danger: 1, total: 4, settling: 2 },
+      { success: 3, warning: 1, danger: 0, total: 4, settling: 0 },
+    )).toEqual({
+      value: '2 · 1 · 1',
+      detail: '2 settling · Clear setback vs last month',
+      tone: 'warning',
+    });
+  });
+
+  it('notes settling categories when no prior month exists', () => {
+    expect(formatCategorySlaBandsScorecardKpi(
+      { success: 2, warning: 1, danger: 0, total: 3, settling: 1 },
+      null,
+    )).toEqual({
+      value: '2 · 1 · 0',
+      detail: '1 settling',
+      tone: 'warning',
+    });
+  });
+});
+
+describe('formatCategorySlaBandAccessibleSummary', () => {
+  it('lists each band in plain language', () => {
+    expect(formatCategorySlaBandAccessibleSummary({ success: 2, warning: 1, danger: 1, total: 4, settling: 0 }))
+      .toBe('2 meeting expectations, 1 slipping, 1 below expectations');
+  });
+
+  it('includes the MoM verdict when prior counts are provided', () => {
+    const current = { success: 2, warning: 1, danger: 1, total: 4, settling: 0 };
+    const prev = { success: 3, warning: 1, danger: 0, total: 4, settling: 0 };
+    expect(formatCategorySlaBandAccessibleSummary(current, prev))
+      .toBe('2 meeting expectations, 1 slipping, 1 below expectations. Clear setback vs last month.');
+  });
+});
+
 describe('detectNotables', () => {
   const dicts = mockDicts();
 
@@ -467,6 +681,48 @@ describe('computeCohortSettling', () => {
   });
 });
 
+function mockRequestOnDay(day: number, category: string, month = '2025-05'): ProcessedRequest {
+  const [year, mon] = month.split('-').map(Number);
+  const date = new Date(year, mon - 1, day, 12, 0, 0);
+  return {
+    ...mockOpenRequest(1, month),
+    date,
+    category,
+  };
+}
+
+describe('computeDailyVolumeByCategory', () => {
+  it('aggregates filing volume by day and category for one month', () => {
+    const chart = computeDailyVolumeByCategory([
+      mockRequestOnDay(1, 'Sanitation & Dumping'),
+      mockRequestOnDay(1, 'Trees & Canopy'),
+      mockRequestOnDay(2, 'Sanitation & Dumping'),
+      mockRequestOnDay(2, 'Sanitation & Dumping'),
+    ], '2025-05');
+
+    expect(chart.dayLabels).toHaveLength(31);
+    expect(chart.dayLabels[0]).toBe('May 1');
+    expect(chart.traces).toHaveLength(2);
+    expect(chart.traces[0].name).toBe('Sanitation & Dumping');
+    expect(chart.traces[0].y[0]).toBe(1);
+    expect(chart.traces[0].y[1]).toBe(2);
+    expect(chart.traces[1].name).toBe('Trees & Canopy');
+    expect(chart.traces[1].y[0]).toBe(1);
+  });
+
+  it('excludes rows outside the UTC filing month', () => {
+    const chart = computeDailyVolumeByCategory([
+      {
+        ...mockOpenRequest(1, '2025-01'),
+        date: new Date('2025-02-01T03:00:00.000Z'),
+        category: 'Sanitation & Dumping',
+      },
+    ], '2025-01');
+
+    expect(chart.traces.reduce((sum, trace) => sum + trace.y.reduce((a, b) => a + b, 0), 0)).toBe(0);
+  });
+});
+
 describe('computeCumulativeResolutionCurve', () => {
   it('tracks cumulative closure by days since filing', () => {
     const curve = computeCumulativeResolutionCurve([
@@ -489,6 +745,121 @@ describe('computeCumulativeResolutionCurve', () => {
   });
 });
 
+describe('computeCohortFlow', () => {
+  const fullWindowAsOf = new Date(Date.UTC(2026, 0, 1));
+
+  it('tracks cumulative resolved and open totals on calendar days', () => {
+    const filedDate = new Date(Date.UTC(2025, 4, 15));
+    const chart = computeCohortFlow([
+      {
+        ...mockClosedRequest(1, '2025-05'),
+        date: filedDate,
+      },
+      {
+        ...mockClosedRequest(3, '2025-05'),
+        date: filedDate,
+      },
+      {
+        ...mockOpenRequest(5, '2025-05'),
+        date: filedDate,
+      },
+      {
+        ...mockClosedRequest(2, '2025-05'),
+        date: filedDate,
+        category: 'Trees & Canopy',
+      },
+    ], '2025-05', fullWindowAsOf);
+
+    expect(chart.hasData).toBe(true);
+    expect(chart.dayLabels).toHaveLength(31 + 120);
+    expect(chart.traces).toHaveLength(3);
+    expect(chart.traces[0].name).toBe('Resolved');
+    expect(chart.traces[1].name).toBe('Open within SLA');
+    expect(chart.traces[2].name).toBe('Open past SLA');
+
+    const day15Idx = 14;
+    expect(chart.traces[0].y[day15Idx]).toBe(0);
+    expect(chart.traces[1].y[day15Idx]).toBe(4);
+    expect(chart.traces[2].y[day15Idx]).toBe(0);
+    expect(chart.traces[0].customdata[day15Idx]).toBe(0);
+    expect(chart.traces[1].customdata[day15Idx]).toBe(100);
+    expect(chart.traces[0].y[day15Idx + 1]).toBe(1);
+    expect(chart.traces[1].y[day15Idx + 1]).toBe(3);
+    expect(chart.traces[2].y[day15Idx + 1]).toBe(0);
+    expect(chart.traces[0].customdata[day15Idx + 1]).toBe(25);
+    expect(chart.traces[1].customdata[day15Idx + 1]).toBe(75);
+    expect(chart.traces[0].y[day15Idx + 3]).toBe(3);
+    expect(chart.traces[1].y[day15Idx + 3]).toBe(1);
+    expect(chart.traces[2].y[day15Idx + 3]).toBe(0);
+    expect(chart.traces[0].customdata[day15Idx + 3]).toBe(75);
+    expect(chart.traces[1].customdata[day15Idx + 3]).toBe(25);
+  });
+
+  it('tracks open past SLA separately from open within SLA', () => {
+    const filedDate = new Date(Date.UTC(2025, 4, 15));
+    const asOf = new Date(Date.UTC(2025, 4, 20));
+    const chart = computeCohortFlow([
+      {
+        ...mockOpenRequest(5, '2025-05'),
+        date: filedDate,
+        SERVICEDUEDATE: '2025-05-17 12:00:00 UTC',
+      },
+    ], '2025-05', asOf);
+
+    const withinIdx = chart.dayLabels.indexOf('May 17');
+    const pastIdx = chart.dayLabels.indexOf('May 18');
+
+    expect(chart.traces[1].y[withinIdx]).toBe(1);
+    expect(chart.traces[2].y[withinIdx]).toBe(0);
+    expect(chart.traces[1].y[pastIdx]).toBe(0);
+    expect(chart.traces[2].y[pastIdx]).toBe(1);
+  });
+
+  it('counts resolutions during the post-month follow-up window', () => {
+    const filedDate = new Date(Date.UTC(2025, 4, 15));
+    const chart = computeCohortFlow([
+      {
+        ...mockClosedRequest(30, '2025-05'),
+        date: filedDate,
+        RESOLUTIONDATE: '2025-06-14 12:00:00 UTC',
+      },
+    ], '2025-05', fullWindowAsOf);
+
+    const resolved = chart.traces[0];
+    const monthEndIdx = 30;
+    const followUpIdx = chart.dayLabels.indexOf('Jun 14');
+
+    expect(followUpIdx).toBeGreaterThan(monthEndIdx);
+    expect(resolved.y[monthEndIdx]).toBe(0);
+    expect(resolved.y[followUpIdx]).toBe(1);
+    expect(resolved.customdata[followUpIdx]).toBe(100);
+  });
+
+  it('stops at asOf and treats post-asOf closures as still open', () => {
+    const filedDate = new Date(Date.UTC(2025, 4, 15));
+    const asOf = new Date(Date.UTC(2025, 4, 17));
+    const chart = computeCohortFlow([
+      { ...mockClosedRequest(1, '2025-05'), date: filedDate },
+      { ...mockClosedRequest(10, '2025-05'), date: filedDate },
+    ], '2025-05', asOf);
+
+    expect(chart.dayLabels).toHaveLength(17);
+    expect(chart.traces[0].y[16]).toBe(1);
+    expect(chart.traces[1].y[16]).toBe(1);
+    expect(chart.traces[2].y[16]).toBe(0);
+  });
+
+  it('returns empty traces when no cohort rows match', () => {
+    expect(computeCohortFlow([], '2025-05', fullWindowAsOf)).toEqual({
+      dayLabels: expect.any(Array),
+      xTickVals: expect.any(Array),
+      xTickText: expect.any(Array),
+      traces: [],
+      hasData: false,
+    });
+  });
+});
+
 describe('formatSlaScorecardKpi', () => {
   it('describes this-month SLA performance, not MoM', () => {
     expect(formatSlaScorecardKpi(99)).toEqual({
@@ -505,6 +876,14 @@ describe('formatSlaScorecardKpi', () => {
       value: '85%',
       detail: 'Well below expectations',
       tone: 'danger',
+    });
+  });
+
+  it('defers the verdict while the cohort is still settling', () => {
+    expect(formatSlaScorecardKpi(99, true)).toEqual({
+      value: '99%',
+      detail: 'Data still settling',
+      tone: 'warning',
     });
   });
 });
@@ -534,6 +913,24 @@ describe('formatResolvedScorecardKpi', () => {
   it('handles zero filings', () => {
     expect(formatResolvedScorecardKpi(0, 0)).toEqual({
       value: '0%',
+      detail: 'No filings this month',
+      tone: 'default',
+    });
+  });
+});
+
+describe('formatFiledScorecardKpi', () => {
+  it('shows resolution progress for the filing cohort', () => {
+    expect(formatFiledScorecardKpi(40966, 32000)).toEqual({
+      value: '40,966',
+      detail: '78.1% resolved, 8,966 left to go',
+      tone: 'default',
+    });
+  });
+
+  it('handles zero filings', () => {
+    expect(formatFiledScorecardKpi(0, 0)).toEqual({
+      value: '0',
       detail: 'No filings this month',
       tone: 'default',
     });

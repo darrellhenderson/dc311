@@ -7,6 +7,7 @@ import {
   computeMonthlySlaSummary,
   computeOverviewHeadline,
   findSloPitfalls,
+  formatPctSlaOutcomeKnown,
   isImmatureCohort,
   orderCategoryMonthlySla,
   pctSlaOutcomeKnown,
@@ -14,6 +15,7 @@ import {
   selectPerceptibilityChartCategories,
   slaOutcomeKnownLabel,
   slaVerdictLabel,
+  slaOutcomeKnownColor,
   slaScoreColor,
   slaTone,
 } from './overviewAnalytics';
@@ -141,14 +143,31 @@ describe('slaScoreColor', () => {
   });
 });
 
+describe('slaOutcomeKnownColor', () => {
+  it('uses the reporting maturity threshold instead of the 99% SLA target', () => {
+    expect(slaOutcomeKnownColor(98)).toBe(colors.success);
+    expect(slaOutcomeKnownColor(97.5)).toBe(colors.success);
+    expect(slaOutcomeKnownColor(97.4)).toBe(colors.warning);
+    expect(slaOutcomeKnownColor(95)).toBe(colors.warning);
+    expect(slaOutcomeKnownColor(94.9)).toBe(colors.danger);
+  });
+});
+
 describe('pctSlaOutcomeKnown', () => {
   it('counts closed tickets and open past deadline as knowable', () => {
     expect(pctSlaOutcomeKnown(100, 70, 10, 5)).toBe(85);
     expect(slaOutcomeKnownLabel(85)).toBe('85% closed or past SLA deadline');
   });
 
-  it('flags provisional cohorts below 99%', () => {
+  it('formats percentages to one decimal without integer rounding', () => {
+    expect(formatPctSlaOutcomeKnown(98.64)).toBe('98.6%');
+    expect(formatPctSlaOutcomeKnown(98.95)).toBe('99%');
+  });
+
+  it('flags provisional cohorts below 97.5%', () => {
     expect(isImmatureCohort(100, 96, 2, 1)).toBe(false);
+    expect(isImmatureCohort(1000, 970, 5, 0)).toBe(false);
+    expect(isImmatureCohort(1000, 969, 5, 0)).toBe(true);
     expect(isImmatureCohort(100, 70, 10, 5)).toBe(true);
   });
 });
@@ -276,14 +295,14 @@ describe('computeOverviewHeadline', () => {
 describe('selectPerceptibilityChartCategories', () => {
   it('picks high performers and struggling resident-facing categories', () => {
     const catSummary = [
-      { category: 'Sanitation & Dumping', pct_met_sla: 99.5, total: 50000, missed: 0, overdue: 0, good: 50000 },
-      { category: 'City Services & Info', pct_met_sla: 99.2, total: 30000, missed: 0, overdue: 0, good: 30000 },
-      { category: 'Pedestrian Infrastructure', pct_met_sla: 92, total: 8000, missed: 500, overdue: 140, good: 7360 },
-      { category: 'Transit', pct_met_sla: 88, total: 4000, missed: 300, overdue: 180, good: 3520 },
-      { category: 'Public Space & Parks', pct_met_sla: 90, total: 3500, missed: 200, overdue: 150, good: 3150 },
-      { category: 'Traffic Safety', pct_met_sla: 97, total: 2000, missed: 40, overdue: 20, good: 1940 },
-      { category: 'Cycling & Micromobility', pct_met_sla: 99.8, total: 1000, missed: 0, overdue: 0, good: 1000 },
-      { category: 'Roads & Vehicle Infrastructure', pct_met_sla: 85, total: 12000, missed: 1000, overdue: 800, good: 10200 },
+      { category: 'Sanitation & Dumping', pct_met_sla: 99.5, total: 50000, met: 50000, missed: 0, overdue: 0, openWithin: 0, good: 50000 },
+      { category: 'City Services & Info', pct_met_sla: 99.2, total: 30000, met: 30000, missed: 0, overdue: 0, openWithin: 0, good: 30000 },
+      { category: 'Pedestrian Infrastructure', pct_met_sla: 92, total: 8000, met: 7360, missed: 500, overdue: 140, openWithin: 0, good: 7360 },
+      { category: 'Transit', pct_met_sla: 88, total: 4000, met: 3520, missed: 300, overdue: 180, openWithin: 0, good: 3520 },
+      { category: 'Public Space & Parks', pct_met_sla: 90, total: 3500, met: 3150, missed: 200, overdue: 150, openWithin: 0, good: 3150 },
+      { category: 'Traffic Safety', pct_met_sla: 97, total: 2000, met: 1940, missed: 40, overdue: 20, openWithin: 0, good: 1940 },
+      { category: 'Cycling & Micromobility', pct_met_sla: 99.8, total: 1000, met: 1000, missed: 0, overdue: 0, openWithin: 0, good: 1000 },
+      { category: 'Roads & Vehicle Infrastructure', pct_met_sla: 85, total: 12000, met: 10200, missed: 1000, overdue: 800, openWithin: 0, good: 10200 },
     ];
 
     const selected = selectPerceptibilityChartCategories(catSummary);
@@ -536,11 +555,11 @@ describe('computeCherryPickSensitivity', () => {
 
   it('buildCategoryDek uses full category counts, not top-3 highlight slice', () => {
     const catSummary = [
-      { category: 'City Services', total: 1000, missed: 0, overdue: 0, good: 1000, pct_met_sla: 100 },
-      { category: 'Environment', total: 100, missed: 0, overdue: 0, good: 100, pct_met_sla: 100 },
-      { category: 'Trees', total: 5000, missed: 100, overdue: 80, good: 4820, pct_met_sla: 96.4 },
-      { category: 'Sanitation', total: 80000, missed: 15000, overdue: 8000, good: 57000, pct_met_sla: 71.3 },
-      { category: 'Traffic', total: 10000, missed: 500, overdue: 300, good: 9200, pct_met_sla: 92 },
+      { category: 'City Services', total: 1000, met: 1000, missed: 0, overdue: 0, openWithin: 0, good: 1000, pct_met_sla: 100 },
+      { category: 'Environment', total: 100, met: 100, missed: 0, overdue: 0, openWithin: 0, good: 100, pct_met_sla: 100 },
+      { category: 'Trees', total: 5000, met: 4820, missed: 100, overdue: 80, openWithin: 0, good: 4820, pct_met_sla: 96.4 },
+      { category: 'Sanitation', total: 80000, met: 57000, missed: 15000, overdue: 8000, openWithin: 0, good: 57000, pct_met_sla: 71.3 },
+      { category: 'Traffic', total: 10000, met: 9200, missed: 500, overdue: 300, openWithin: 0, good: 9200, pct_met_sla: 92 },
     ];
 
     const article = buildCategoryArticle(catSummary, [], null);
