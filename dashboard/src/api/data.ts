@@ -12,8 +12,8 @@ import { markPerf, measurePerf } from '../lib/perf';
 
 const DATA_BASE = `${import.meta.env.BASE_URL}data/`;
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${DATA_BASE}${path}`);
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${DATA_BASE}${path}`, init);
   if (!response.ok) {
     throw new Error(`Failed to fetch ${path}: ${response.status} ${response.statusText}`);
   }
@@ -32,7 +32,7 @@ export function shardsForPreset(manifest: DataManifest, preset: DateRangePreset)
 
 export async function fetchManifest(): Promise<DataManifest> {
   markPerf('data:manifest:start');
-  const manifest = await fetchJson<DataManifest>('manifest.json');
+  const manifest = await fetchJson<DataManifest>('manifest.json', { cache: 'no-store' });
   markPerf('data:manifest:end');
   measurePerf('data:manifest:start', 'data:manifest:end', 'data-manifest');
   return manifest;
