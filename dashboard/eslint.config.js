@@ -18,7 +18,6 @@ export default [
         document: 'readonly',
         performance: 'readonly',
         fetch: 'readonly',
-        RequestInit: 'readonly',
         console: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
