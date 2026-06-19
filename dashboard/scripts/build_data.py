@@ -298,6 +298,73 @@ def build_sla_rollup(rows: list[dict], enc: DictEncoder) -> list[dict]:
     return result
 
 
+def _estimate_row_from_group(group_df: pd.DataFrame, st: int, w: int | None, min_n: int) -> dict | None:
+    """Build one manifest estimate row from a service-type (and optional ward) slice."""
+    closed = group_df[(group_df["ic"] == 1) & group_df["rd"].notna()]
+    n_closed = len(closed)
+    if n_closed < min_n:
+        return None
+
+    res_times = sorted(closed["rd"].tolist())
+    total = len(group_df)
+    missed = 0
+    open_past = 0
+    sla_days_list: list[float] = []
+
+    for row in group_df.itertuples(index=False):
+        dd = row.dd
+        if dd is None or (isinstance(dd, float) and math.isnan(dd)):
+            continue
+        sla_d = (dd - row.a) / 86_400_000
+        sla_days_list.append(sla_d)
+        rd = row.rd
+        if row.ic == 1 and rd is not None and not (isinstance(rd, float) and math.isnan(rd)):
+            if rd > sla_d:
+                missed += 1
+        if row.io == 1 and row.ad > sla_d:
+            open_past += 1
+
+    pct_met = round((total - missed - open_past) / total * 100, 1) if total > 0 else 0.0
+    sla_d = round(median(sla_days_list)) if sla_days_list else -1
+
+    return {
+        "st": int(st),
+        "w": w,
+        "n": n_closed,
+        "p25": round(percentile(res_times, 25), 1),
+        "p50": round(percentile(res_times, 50), 1),
+        "p75": round(percentile(res_times, 75), 1),
+        "p90": round(percentile(res_times, 90), 1),
+        "p95": round(percentile(res_times, 95), 1),
+        "sla_days": sla_d,
+        "pct_met_sla": pct_met,
+    }
+
+
+# Keep in sync with estimateData.ts: CITYWIDE_MIN_SAMPLE, WARD_MIN_SAMPLE
+CITYWIDE_ESTIMATE_MIN_N = 10
+WARD_ESTIMATE_MIN_N = 30
+
+
+def build_estimate_data(
+    compact_df: pd.DataFrame,
+    citywide_min_n: int = CITYWIDE_ESTIMATE_MIN_N,
+    ward_min_n: int = WARD_ESTIMATE_MIN_N,
+) -> list[dict]:
+    """Pre-aggregate response-time percentiles for the Estimate tab (full dataset)."""
+    rows: list[dict] = []
+    for st, group in compact_df.groupby("st", sort=False):
+        row = _estimate_row_from_group(group, int(st), None, citywide_min_n)
+        if row is not None:
+            rows.append(row)
+    for (st, w), group in compact_df.groupby(["st", "w"], sort=False):
+        row = _estimate_row_from_group(group, int(st), int(w), ward_min_n)
+        if row is not None:
+            rows.append(row)
+    rows.sort(key=lambda r: (r["st"], -1 if r["w"] is None else r["w"]))
+    return rows
+
+
 def build_explorer_rollup(rows: list[dict], enc: DictEncoder) -> dict:
     """Pre-aggregate explorer chart inputs for a shard."""
     cat_counts: dict[int, dict] = defaultdict(lambda: {"open": 0, "resolved": 0})
@@ -379,6 +446,11 @@ def main():
     compact_df = build_compact_df(df, enc)
     print(f"  {len(compact_df):,} rows after filtering ({time.monotonic() - t0:.1f}s)")
 
+    print("  Building estimate data…")
+    t0 = time.monotonic()
+    estimates = build_estimate_data(compact_df)
+    print(f"  {len(estimates):,} estimate rows ({time.monotonic() - t0:.1f}s)")
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ROLLUP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -424,6 +496,7 @@ def main():
         "dictionaries": dict(enc.tables),
         "categoryMap": CATEGORY_MAP,
         "defaults": {"windowDays": 90},
+        "estimates": estimates,
     }
     with open(OUT_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)

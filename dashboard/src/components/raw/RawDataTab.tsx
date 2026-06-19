@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useDashboard } from '../../context/DashboardContext';
 import { filterExplorerRows, EMPTY_EXPLORER_FILTERS, ExplorerFilterState, summarizeExplorerFilterDimensions } from '../../lib/filterTypes';
 import { trackFilterChange } from '../../lib/analytics';
+import { useTrackFilterTabPageView } from '../../hooks/useTrackFilterTabPageView';
 import { ProcessedRequest } from '../../lib/dataProcessing';
 import { useIsMobile } from '../../hooks/useBreakpoint';
 import ExplorerFilterBar from '../shared/filters/ExplorerFilterBar';
@@ -69,6 +70,9 @@ export default function RawDataTab() {
       return next;
     });
   }, []);
+
+  const filterSummary = summarizeExplorerFilterDimensions(filters);
+  useTrackFilterTabPageView('raw', filterSummary);
 
   const filtered = useMemo(() => {
     if (!processed) return [];

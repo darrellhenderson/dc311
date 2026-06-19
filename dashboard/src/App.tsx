@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchDashboardData } from './api/data';
 import { DateRangePreset } from './api/dataTypes';
 import AboutPanel from './components/shell/AboutPanel';
@@ -8,9 +8,11 @@ import AppHeader from './components/shell/AppHeader';
 import TabNav from './components/shell/TabNav';
 import { DashboardProvider } from './context/DashboardContext';
 import { trackAboutOpen, trackEvent } from './lib/analytics';
-import { TAB_IDS, TabId } from './lib/site';
+import { ESTIMATE_URL_KEYS, resolveTabFromSearchParams, stripEstimateSearchParams } from './lib/estimateRouting';
+import { TabId } from './lib/site';
 
 const OverviewTab = lazy(() => import('./components/overview/OverviewTab'));
+const EstimateTab = lazy(() => import('./components/estimate/EstimateTab'));
 const SLATab = lazy(() => import('./components/sla/SLATab'));
 const ExplorerTab = lazy(() => import('./components/explorer/ExplorerTab'));
 const RawDataTab = lazy(() => import('./components/raw/RawDataTab'));
@@ -35,9 +37,7 @@ function TabFallback() {
 }
 
 function readInitialTab(): TabId {
-  const params = new window.URLSearchParams(window.location.search);
-  const tab = params.get('tab');
-  return TAB_IDS.includes(tab as TabId) ? (tab as TabId) : 'overview';
+  return resolveTabFromSearchParams(new window.URLSearchParams(window.location.search));
 }
 
 function DashboardShell() {
@@ -45,8 +45,10 @@ function DashboardShell() {
   const [datePreset, setDatePreset] = useState<DateRangePreset>('full');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number; currentShard: string } | null>(null);
+  const tabHistoryMode = useRef<'replace' | 'push'>('replace');
 
   const handleTabChange = useCallback((tab: TabId) => {
+    tabHistoryMode.current = 'push';
     setActiveTab((current) => {
       if (current === tab) {
         return current;
@@ -57,17 +59,54 @@ function DashboardShell() {
   }, []);
 
   useEffect(() => {
+    trackEvent('tab_view', { tab: readInitialTab() });
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      tabHistoryMode.current = 'replace';
+      const tab = readInitialTab();
+      setActiveTab(tab);
+      trackEvent('tab_view', { tab });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    const params = new window.URLSearchParams(window.location.search);
+
     if (activeTab === 'overview') {
+      const hasEstimateState = ESTIMATE_URL_KEYS.some((key) => params.has(key));
+      if (hasEstimateState) {
+        if (params.get('tab') === 'overview') return;
+        params.set('tab', 'overview');
+        const url = `${window.location.pathname}?${params.toString()}`;
+        window.history.replaceState(null, '', url);
+        return;
+      }
       const url = window.location.pathname;
       if (window.location.search) {
         window.history.replaceState(null, '', url);
       }
       return;
     }
-    const params = new window.URLSearchParams();
+
+    if (activeTab !== 'estimate') {
+      stripEstimateSearchParams(params);
+    }
+
     params.set('tab', activeTab);
-    const url = `${window.location.pathname}?${params.toString()}`;
-    window.history.replaceState(null, '', url);
+
+    const next = `${window.location.pathname}?${params.toString()}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current === next) return;
+
+    const writeUrl = tabHistoryMode.current === 'push'
+      ? window.history.pushState.bind(window.history)
+      : window.history.replaceState.bind(window.history);
+    writeUrl(null, '', next);
+    tabHistoryMode.current = 'push';
   }, [activeTab]);
 
   const handleDatePresetChange = useCallback((preset: DateRangePreset) => {
@@ -159,6 +198,7 @@ function DashboardShell() {
           ) : (
             <Suspense fallback={<TabFallback />}>
               {activeTab === 'overview' && <OverviewTab />}
+              {activeTab === 'estimate' && <EstimateTab />}
               {activeTab === 'sla' && <SLATab />}
               {activeTab === 'explorer' && <ExplorerTab />}
               {activeTab === 'raw' && <RawDataTab />}

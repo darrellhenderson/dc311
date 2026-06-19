@@ -3,6 +3,7 @@ import type { Data } from 'plotly.js';
 import { useDashboard } from '../../context/DashboardContext';
 import { filterExplorerRows, EMPTY_EXPLORER_FILTERS, ExplorerFilterState, summarizeExplorerFilterDimensions } from '../../lib/filterTypes';
 import { trackFilterChange } from '../../lib/analytics';
+import { useTrackFilterTabPageView } from '../../hooks/useTrackFilterTabPageView';
 import { useIsMobile, useIsDesktop } from '../../hooks/useBreakpoint';
 import {
   capChartHeight,
@@ -59,6 +60,9 @@ export default function ExplorerTab() {
       return next;
     });
   }, []);
+
+  const filterSummary = summarizeExplorerFilterDimensions(filters);
+  useTrackFilterTabPageView('explorer', filterSummary);
 
   const filtered = useMemo(() => {
     if (!processed) return [];
@@ -183,7 +187,13 @@ export default function ExplorerTab() {
         onChange={handleFilterChange}
       />
 
-      <SectionCard title="Overview" subtitle={`${total.toLocaleString()} matching requests`} defaultOpen>
+      <SectionCard
+        title="Overview"
+        subtitle={`${total.toLocaleString()} matching requests`}
+        defaultOpen
+        analyticsTab="explorer"
+        sectionId="overview"
+      >
         <StatRow
           stats={[
             { label: 'Total Requests', value: total.toLocaleString() },
@@ -226,7 +236,12 @@ export default function ExplorerTab() {
         </div>
       </SectionCard>
 
-      <SectionCard title="Volume & timing" subtitle="Day-of-week patterns, ticket age, resolution time, weekly trends">
+      <SectionCard
+        title="Volume & timing"
+        subtitle="Day-of-week patterns, ticket age, resolution time, weekly trends"
+        analyticsTab="explorer"
+        sectionId="volume_timing"
+      >
         <DeferredChart minHeight={400}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <PlotlyChart
@@ -293,7 +308,12 @@ export default function ExplorerTab() {
         </DeferredChart>
       </SectionCard>
 
-      <SectionCard title="Geography" subtitle={`${filtered.length.toLocaleString()} requests · map, wards, heatmap`}>
+      <SectionCard
+        title="Geography"
+        subtitle={`${filtered.length.toLocaleString()} requests · map, wards, heatmap`}
+        analyticsTab="explorer"
+        sectionId="geography"
+      >
         <DeferredChart minHeight={mapSectionHeight(isMobile)}>
           {explorerMap.hasData ? (
             <div className="-mx-4">
@@ -376,7 +396,12 @@ export default function ExplorerTab() {
         </DeferredChart>
       </SectionCard>
 
-      <SectionCard title="Service types" subtitle="Resolved vs open by service type">
+      <SectionCard
+        title="Service types"
+        subtitle="Resolved vs open by service type"
+        analyticsTab="explorer"
+        sectionId="service_types"
+      >
         <DeferredChart minHeight={300}>
           <PlotlyChart
             data={[

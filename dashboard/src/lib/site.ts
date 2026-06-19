@@ -1,4 +1,7 @@
-/** Site copy and external links for portfolio shell. */
+import type { TabId } from './tabIds';
+
+export type { TabId } from './tabIds';
+export { TAB_IDS } from './tabIds';
 
 export const SITE_TITLE = '311: DC\u2019s To-Do List';
 
@@ -16,13 +19,10 @@ export const LINKEDIN_URL = import.meta.env.VITE_LINKEDIN_URL ?? 'https://www.li
 export const AUTHOR_BIO =
   'Reliability engineer applying cloud infrastructure thinking to civic systems.';
 
-export const TAB_CONFIG = [
-  { id: 'overview' as const, label: 'Overview', subtitle: 'The big picture' },
-  { id: 'sla' as const, label: 'Performance', subtitle: 'By category and service type' },
-  { id: 'explorer' as const, label: 'Explore', subtitle: 'Ward, timing, and volume' },
-  { id: 'raw' as const, label: 'Records', subtitle: 'The raw data' },
+export const TAB_CONFIG: { id: TabId; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'estimate', label: 'Estimate' },
+  { id: 'sla', label: 'Performance' },
+  { id: 'explorer', label: 'Explore' },
+  { id: 'raw', label: 'Records' },
 ];
-
-export type TabId = (typeof TAB_CONFIG)[number]['id'];
-
-export const TAB_IDS: TabId[] = TAB_CONFIG.map((tab) => tab.id);

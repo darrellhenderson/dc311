@@ -12,6 +12,7 @@ import {
 } from '../../lib/responsiveChartLayout';
 import { plotlyAxisTickFont, plotlyAxisTitleFont } from '../../lib/theme';
 import { slaCategorySummary } from '../../lib/dataProcessing';
+import { trackOverviewTabBridge } from '../../lib/analytics';
 import {
   buildCategoryArticle,
   computeCategoryMonthlySlaFromRollups,
@@ -203,6 +204,7 @@ export default function OverviewTab() {
   );
 
   const handleTabNavigate = (tab: 'sla' | 'explorer') => {
+    trackOverviewTabBridge(tab);
     setDatePreset('full');
     setActiveTab(tab);
   };

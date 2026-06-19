@@ -88,8 +88,14 @@ jobs:
         working-directory: dashboard
         env:
           VITE_GITHUB_REPO_URL: ${{ vars.VITE_GITHUB_REPO_URL || format('https://github.com/{0}', github.repository) }}
-          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('{0}{1}', steps.pages.outputs.base_path, steps.pages.outputs.base_path != '' && '/' || '/') }}
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('{0}{1}', steps.pages.outputs.base_path, steps.pages.outputs.base_path != '' && '/' || '') }}
         run: npm run build
+
+      - name: Generate share assets (OG images + HTML)
+        working-directory: dashboard
+        env:
+          SITE_URL: ${{ vars.SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+        run: npm run generate-share
 
       - name: Disable Jekyll processing
         run: touch dashboard/dist/.nojekyll

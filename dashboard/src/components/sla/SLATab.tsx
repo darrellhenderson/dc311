@@ -1,10 +1,12 @@
-import { useState, useMemo, useCallback, ReactNode } from 'react';
+import { useState, useMemo, useCallback, ReactNode, useEffect } from 'react';
 import type { Data } from 'plotly.js';
 import { useDashboard } from '../../context/DashboardContext';
 import { slaTableData, slaCategorySummary } from '../../lib/dataProcessing';
 import { hasSlaFilters } from '../../lib/rollups';
 import { EMPTY_SLA_FILTERS, filterSlaRows, SlaFilterState, summarizeSlaFilterDimensions } from '../../lib/filterTypes';
-import { trackFilterChange } from '../../lib/analytics';
+import { consumePendingSlaFilters } from '../../lib/slaHandoff';
+import { trackFilterChange, trackSlaHandoffApplied } from '../../lib/analytics';
+import { useTrackFilterTabPageView } from '../../hooks/useTrackFilterTabPageView';
 import { useIsMobile, useIsDesktop } from '../../hooks/useBreakpoint';
 import {
   capChartHeight,
@@ -46,6 +48,23 @@ export default function SLATab() {
   const [filters, setFilters] = useState(EMPTY_SLA_FILTERS);
   const [slaPage, setSlaPage] = useState(0);
   const slaPageSize = 25;
+
+  useEffect(() => {
+    const pending = consumePendingSlaFilters();
+    if (!pending) return;
+    setFilters((prev) => ({
+      ...prev,
+      categories: pending.categories ?? prev.categories,
+      wards: pending.wards ?? prev.wards,
+    }));
+    trackSlaHandoffApplied({
+      has_category: Boolean(pending.categories?.length),
+      has_ward: Boolean(pending.wards?.length),
+    });
+  }, []);
+
+  const filterSummary = summarizeSlaFilterDimensions(filters);
+  useTrackFilterTabPageView('sla', filterSummary);
 
   const handleFilterChange = useCallback((next: SlaFilterState) => {
     setFilters((prev) => {
@@ -246,6 +265,8 @@ export default function SLATab() {
         title="Overview"
         subtitle={`${overallPct}% met SLA · ${totalReqs.toLocaleString()} requests`}
         defaultOpen
+        analyticsTab="sla"
+        sectionId="overview"
       >
         <div className="grid lg:grid-cols-12 gap-3 items-start mb-3">
           <div className="lg:col-span-9 min-w-0">
@@ -287,7 +308,13 @@ export default function SLATab() {
         </div>
       </SectionCard>
 
-      <SectionCard title="Resolution by service type" subtitle="Time to resolve vs % met SLA" defaultOpen>
+      <SectionCard
+        title="Resolution by service type"
+        subtitle="Time to resolve vs % met SLA"
+        defaultOpen
+        analyticsTab="sla"
+        sectionId="resolution_by_type"
+      >
         <DeferredChart minHeight={300}>
           {resolutionChart.hasData ? (
             <ChartPanel>
@@ -307,6 +334,8 @@ export default function SLATab() {
         title="SLA status map"
         subtitle={`${filteredProcessed.length.toLocaleString()} requests · geographic SLA outcomes`}
         defaultOpen
+        analyticsTab="sla"
+        sectionId="sla_status_map"
       >
         <DeferredChart minHeight={mapSectionHeight(isMobile)}>
           {slaMap.hasData ? (
@@ -329,7 +358,14 @@ export default function SLATab() {
         </DeferredChart>
       </SectionCard>
 
-      <SectionCard title="SLA by service type" subtitle={`${slaData.length} service types`} defaultOpen variant="mono">
+      <SectionCard
+        title="SLA by service type"
+        subtitle={`${slaData.length} service types`}
+        defaultOpen
+        variant="mono"
+        analyticsTab="sla"
+        sectionId="sla_by_service_type"
+      >
         <ScrollHint />
         <div className="overflow-x-auto max-h-[480px] scrollbar-thin">
           <table className="w-full text-sm font-mono">
@@ -368,7 +404,13 @@ export default function SLATab() {
         )}
       </SectionCard>
 
-      <SectionCard title="SLA failures" subtitle="Resolved late and open & overdue by service type" defaultOpen>
+      <SectionCard
+        title="SLA failures"
+        subtitle="Resolved late and open & overdue by service type"
+        defaultOpen
+        analyticsTab="sla"
+        sectionId="sla_failures"
+      >
         <DeferredChart minHeight={failuresHeight}>
           <ChartPanel>
             <PlotlyChart

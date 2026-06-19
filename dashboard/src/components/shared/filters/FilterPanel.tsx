@@ -43,7 +43,7 @@ export default function FilterPanel({
 
         {showDateRange && (
           <div
-            className="flex items-center shrink-0 border-l border-border px-3"
+            className="hidden md:flex items-center shrink-0 border-l border-border px-3"
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
@@ -63,6 +63,11 @@ export default function FilterPanel({
 
       {open && (
         <div className="font-mono px-4 pb-3 border-t border-border pt-2.5">
+          {showDateRange && (
+            <div className="md:hidden mb-3">
+              <DateRangeSelect variant="card" className="w-full" />
+            </div>
+          )}
           {children}
           <FilterChips chips={chips} onClearAll={onClearAll} />
         </div>

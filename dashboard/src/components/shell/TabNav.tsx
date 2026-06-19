@@ -1,4 +1,7 @@
+import { useEffect, useRef } from 'react';
 import { TAB_CONFIG, TabId } from '../../lib/site';
+
+export const TAB_NAV_HEIGHT_VAR = '--dashboard-tab-nav-height';
 
 interface TabNavProps {
   activeTab: TabId;
@@ -6,10 +9,33 @@ interface TabNavProps {
 }
 
 export default function TabNav({ activeTab, onTabChange }: TabNavProps) {
+  const navRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const node = navRef.current;
+    if (!node) return undefined;
+
+    const syncHeight = () => {
+      document.documentElement.style.setProperty(TAB_NAV_HEIGHT_VAR, `${node.offsetHeight}px`);
+    };
+
+    syncHeight();
+    const observer = new ResizeObserver(syncHeight);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty(TAB_NAV_HEIGHT_VAR);
+    };
+  }, []);
+
   return (
-    <nav className="sticky top-0 z-30 bg-surface border-b border-border" aria-label="Dashboard views">
+    <nav
+      ref={navRef}
+      className="sticky top-0 z-30 bg-surface border-b border-border"
+      aria-label="Dashboard views"
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:flex md:space-x-1" role="tablist">
+        <div className="grid grid-cols-5 md:flex md:space-x-1" role="tablist">
           {TAB_CONFIG.map((tab) => {
             const isActive = activeTab === tab.id;
             return (
@@ -19,14 +45,13 @@ export default function TabNav({ activeTab, onTabChange }: TabNavProps) {
                 role="tab"
                 aria-selected={isActive}
                 onClick={() => onTabChange(tab.id)}
-                className={`min-h-[44px] px-2 md:px-4 py-2.5 text-center md:text-left border-b-2 transition-colors ${
+                className={`min-h-[44px] px-1 sm:px-2 md:px-4 py-2.5 text-center md:text-left text-body font-medium border-b-2 transition-colors ${
                   isActive
                     ? 'border-blue-600 text-blue-600'
                     : 'border-transparent text-text-muted hover:text-gray-900'
                 }`}
               >
-                <span className="text-body font-medium block">{tab.label}</span>
-                <span className="hidden md:block text-caption opacity-75">{tab.subtitle}</span>
+                {tab.label}
               </button>
             );
           })}

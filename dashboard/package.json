@@ -10,7 +10,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx --max-warnings 0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate-share": "npx tsx scripts/generate_share_assets.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.40.0",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@napi-rs/canvas": "^0.1.53",
     "@types/plotly.js": "^2.29.4",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
@@ -32,6 +34,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
+    "tsx": "^4.21.0",
     "typescript": "^5.2.2",
     "vite": "^8.0.16",
     "vitest": "^4.1.8"
