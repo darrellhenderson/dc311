@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   buildSharePathContent,
   formatWardGapHero,
@@ -7,6 +9,8 @@ import {
   resolveSharePath,
   selectSharePath,
   SHARE_PATH_THRESHOLDS,
+  truncateServiceType,
+  validateSharePathCoherence,
 } from './sharePaths';
 import { EstimateResult } from './estimateData';
 
@@ -21,6 +25,20 @@ const baseEstimate = (
   sla_days: 21,
   pct_met_sla: 94,
   ...overrides,
+});
+
+describe('truncateServiceType', () => {
+  it('returns short names unchanged', () => {
+    expect(truncateServiceType('Pothole')).toBe('Pothole');
+  });
+
+  it('truncates at a word boundary when possible', () => {
+    const long = 'Lost/Stolen Compost Bin, Broken Compost Bin or Opt-Out';
+    const result = truncateServiceType(long);
+    expect(result.endsWith('\u2026')).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(39);
+    expect(result).not.toMatch(/Opt-\u2026$/);
+  });
 });
 
 describe('isSlowerWardGap', () => {
@@ -66,20 +84,57 @@ describe('selectSharePath priority', () => {
     }).id).toBe('promise_broken');
   });
 
-  it('classifies generous_deadline when SLA is far out and compliance is high', () => {
-    const estimate = baseEstimate({
+  it('classifies generous_deadline when SLA is far out, regardless of median wait', () => {
+    const longWaitEstimate = baseEstimate({
       p25: 21, p50: 46, p75: 80, pct_met_sla: 100, sla_days: 389,
     });
-    expect(isGenerousDeadline(estimate)).toBe(true);
+    expect(isGenerousDeadline(longWaitEstimate)).toBe(true);
     expect(selectSharePath({
       serviceType: 'Roadway Repair',
       ward: null,
-      estimate,
+      estimate: longWaitEstimate,
       citywideEstimate: null,
     }).id).toBe('generous_deadline');
   });
 
-  it('formats generous_deadline support copy', () => {
+  it('classifies generous_deadline for long SLA even when compliance is modest', () => {
+    const estimate = baseEstimate({
+      p25: 1, p50: 2.7, p75: 7, pct_met_sla: 88.3, sla_days: 259,
+    });
+    expect(isGenerousDeadline(estimate)).toBe(true);
+    const content = resolveSharePath({
+      serviceType: 'Tree Pruning',
+      ward: 'Ward 6',
+      estimate,
+      citywideEstimate: baseEstimate({ p50: 5.2 }),
+    });
+    expect(content.id).toBe('generous_deadline');
+    expect(content.layout).toBe('compliance');
+    expect(content.sentenceLead).toBe('Tree Pruning requests met the deadline');
+    expect(content.heroPrimary).toBe('88% of the time.');
+    expect(content.supportLine).toBe('The city gave itself 259 days.');
+    expect(content.shareLine).toBe(
+      'Tree Pruning requests met the deadline 88% of the time. The city gave itself 259 days.',
+    );
+  });
+
+  it('formats generous_deadline with compliance copy when typical wait is fast', () => {
+    const content = resolveSharePath({
+      serviceType: 'Tree Planting',
+      ward: null,
+      estimate: baseEstimate({
+        p25: 1, p50: 2, p75: 20, pct_met_sla: 100, sla_days: 710,
+      }),
+      citywideEstimate: null,
+    });
+    expect(content.id).toBe('generous_deadline');
+    expect(content.layout).toBe('compliance');
+    expect(content.sentenceLead).toBe('Tree Planting requests met the deadline');
+    expect(content.heroPrimary).toBe('100% of the time.');
+    expect(content.supportLine).toBe('The deadline is over 2 years.');
+  });
+
+  it('formats generous_deadline read-aloud copy when typical wait is slow', () => {
     const content = resolveSharePath({
       serviceType: 'Roadway Repair',
       ward: null,
@@ -89,8 +144,15 @@ describe('selectSharePath priority', () => {
       citywideEstimate: null,
     });
     expect(content.id).toBe('generous_deadline');
-    expect(content.heroPrimary).toBe('21–80 days');
-    expect(content.supportLine).toBe('Easy to hit 100% when the deadline is over a year.');
+    expect(content.layout).toBe('range');
+    expect(content.sentenceLead).toBe('Roadway Repair usually takes');
+    expect(content.heroPrimary).toBe('21–80 days.');
+    expect(content.supportLine).toBe(
+      'Easy to hit 100% of your deadlines if you give yourself over a year.',
+    );
+    expect(content.shareLine).toBe(
+      'Roadway Repair usually takes 21–80 days. Easy to hit 100% of your deadlines if you give yourself over a year.',
+    );
   });
 
   it('prefers generous_deadline over long_wait', () => {
@@ -144,7 +206,47 @@ describe('selectSharePath priority', () => {
     }).id).toBe('reliable');
   });
 
-  it('uses range layout for perceptibly_slow and compliance for delays_common', () => {
+  it('uses soft support for delays_common from 95% up', () => {
+    for (const pct of [95, 96, 98]) {
+      const content = resolveSharePath({
+        serviceType: 'Alley Cleaning',
+        ward: 'Ward 2',
+        estimate: baseEstimate({ pct_met_sla: pct }),
+        citywideEstimate: null,
+      });
+      expect(content.id).toBe('delays_common');
+      expect(content.supportLine).toBe('Perceptibly close \u2014 not quite perfect.');
+    }
+  });
+
+  it('uses disappointed support for perceptibly_slow below 95%', () => {
+    const at94 = resolveSharePath({
+      serviceType: 'Pothole',
+      ward: null,
+      estimate: baseEstimate({ pct_met_sla: 94 }),
+      citywideEstimate: null,
+    });
+    expect(at94.id).toBe('perceptibly_slow');
+    expect(at94.supportLine).toBe('Usually fine on a 21-day deadline \u2014 until you are in the 6%.');
+
+    const at88 = resolveSharePath({
+      serviceType: 'Pothole',
+      ward: null,
+      estimate: baseEstimate({ pct_met_sla: 88 }),
+      citywideEstimate: null,
+    });
+    expect(at88.supportLine).toBe('Sounds okay, but why set a deadline if you are not going to meet it?');
+
+    const at82 = resolveSharePath({
+      serviceType: 'Pothole',
+      ward: null,
+      estimate: baseEstimate({ pct_met_sla: 82 }),
+      citywideEstimate: null,
+    });
+    expect(at82.supportLine).toBe('That\u2019s not good enough.');
+  });
+
+  it('uses compliance layout for perceptibly_slow and delays_common', () => {
     const slow = resolveSharePath({
       serviceType: 'Pothole',
       ward: null,
@@ -152,9 +254,10 @@ describe('selectSharePath priority', () => {
       citywideEstimate: null,
     });
     expect(slow.id).toBe('perceptibly_slow');
-    expect(slow.layout).toBe('range');
-    expect(slow.heroLabel).toBe('Typically');
-    expect(slow.supportLine).toContain('Perceptibly slow');
+    expect(slow.layout).toBe('compliance');
+    expect(slow.sentenceLead).toBe('Pothole requests met the deadline');
+    expect(slow.heroPrimary).toBe('88% of the time.');
+    expect(slow.supportLine).toBe('Sounds okay, but why set a deadline if you are not going to meet it?');
 
     const delays = resolveSharePath({
       serviceType: 'Pothole',
@@ -164,7 +267,32 @@ describe('selectSharePath priority', () => {
     });
     expect(delays.id).toBe('delays_common');
     expect(delays.layout).toBe('compliance');
-    expect(delays.supportLine).toBe('Most requests are resolved on time, but delays are common.');
+    expect(delays.sentenceLead).toBe('Pothole requests met the deadline');
+    expect(delays.heroPrimary).toBe('96% of the time.');
+    expect(delays.supportLine).toBe('Perceptibly close \u2014 not quite perfect.');
+  });
+
+  it('pairs perceptibly_slow compliance punch with disappointed support', () => {
+    const content = resolveSharePath({
+      serviceType: 'Alley Cleaning',
+      ward: 'Ward 7',
+      estimate: baseEstimate({
+        p25: 10,
+        p50: 17,
+        p75: 27,
+        p90: 41,
+        sla_days: 44,
+        pct_met_sla: 92.7,
+      }),
+      citywideEstimate: null,
+    });
+    expect(content.id).toBe('perceptibly_slow');
+    expect(content.layout).toBe('compliance');
+    expect(content.heroPrimary).toBe('93% of the time.');
+    expect(content.supportLine).toBe('Usually fine on a 44-day deadline \u2014 until you are in the 7%.');
+    expect(content.shareLine).toBe(
+      'Alley Cleaning requests met the deadline 93% of the time. Usually fine on a 44-day deadline \u2014 until you are in the 7%.',
+    );
   });
 
   it('classifies quick_fix when p50 < 1', () => {
@@ -177,12 +305,13 @@ describe('selectSharePath priority', () => {
     }).id).toBe('quick_fix');
   });
 
-  it('classifies wide_range when IQR is large relative to median', () => {
+  it('classifies wide_range when IQR is large and SLA compliance is unavailable', () => {
     const estimate = baseEstimate({
       p25: 5,
       p50: 10,
       p75: 30,
-      pct_met_sla: 96,
+      sla_days: 0,
+      pct_met_sla: 0,
     });
     expect(selectSharePath({
       serviceType: 'Sidewalk Repair',
@@ -192,15 +321,34 @@ describe('selectSharePath priority', () => {
     }).id).toBe('wide_range');
   });
 
-  it('formats wide_range support copy', () => {
+  it('prefers delays_common over wide_range when SLA compliance is strong', () => {
+    expect(selectSharePath({
+      serviceType: 'Tree Pruning',
+      ward: 'Ward 4',
+      estimate: baseEstimate({
+        p25: 0.7,
+        p50: 2.8,
+        p75: 23.6,
+        sla_days: 45,
+        pct_met_sla: 95.2,
+      }),
+      citywideEstimate: baseEstimate({ p50: 5.2 }),
+    }).id).toBe('delays_common');
+  });
+
+  it('formats wide_range read-aloud copy', () => {
     const content = resolveSharePath({
       serviceType: 'Public Space Inspection',
       ward: 'Ward 4',
-      estimate: baseEstimate({ p25: 2, p50: 8, p75: 18, pct_met_sla: 96 }),
+      estimate: baseEstimate({ p25: 2, p50: 8, p75: 18, sla_days: 0, pct_met_sla: 0 }),
       citywideEstimate: null,
     });
     expect(content.id).toBe('wide_range');
-    expect(content.supportLine).toBe('Outcomes vary wildly. They keep you on your toes.');
+    expect(content.sentenceLead).toBe('Public Space Inspection can take');
+    expect(content.supportLine).toBe('Outcomes vary wildly — they keep you on your toes.');
+    expect(content.shareLine).toBe(
+      'Public Space Inspection can take 2–18 days. Outcomes vary wildly — they keep you on your toes.',
+    );
   });
 });
 
@@ -215,7 +363,7 @@ describe('formatWardGapHero', () => {
 });
 
 describe('buildSharePathContent', () => {
-  it('builds ward_gap headline and share line', () => {
+  it('builds ward_gap read-aloud copy', () => {
     const content = resolveSharePath({
       serviceType: 'Scheduled Yard Waste',
       ward: 'Ward 6',
@@ -223,28 +371,65 @@ describe('buildSharePathContent', () => {
       citywideEstimate: baseEstimate({ p50: 11 }),
     });
     expect(content.id).toBe('ward_gap');
-    expect(content.heroLabel).toBe('In Ward 6');
-    expect(content.heroPrimary).toBe('6 days longer');
-    expect(content.supportLine).toBe('17 days in Ward 6. Citywide? 11.');
-    expect(content.shareLine).toContain('6 days longer');
-    expect(content.shareLine).toContain('17 days here, 11 citywide');
+    expect(content.sentenceLead).toBe('Scheduled Yard Waste requests in Ward 6 take');
+    expect(content.heroPrimary).toBe('17 days.');
+    expect(content.supportLine).toBe('Citywide? 11 days.');
+    expect(content.shareLine).toBe(
+      'Scheduled Yard Waste requests in Ward 6 take 17 days. Citywide? 11 days.',
+    );
   });
 
-  it('builds promise_broken severe support line', () => {
+  it('builds promise_broken read-aloud copy', () => {
     const selection = selectSharePath({
       serviceType: 'Trash Collection - Missed',
       ward: null,
-      estimate: baseEstimate({ pct_met_sla: 34 }),
+      estimate: baseEstimate({ pct_met_sla: 34, sla_days: 2 }),
       citywideEstimate: null,
     });
     const content = buildSharePathContent(selection, {
       serviceType: 'Trash Collection - Missed',
       ward: null,
-      estimate: baseEstimate({ pct_met_sla: 34 }),
+      estimate: baseEstimate({ pct_met_sla: 34, sla_days: 2 }),
       citywideEstimate: null,
     });
-    expect(content.heroPrimary).toBe('Only 34% on time');
-    expect(content.supportLine).toContain('only delivers 34%');
+    expect(content.sentenceLead).toBe('Trash Collection - Missed requests met the deadline');
+    expect(content.heroPrimary).toBe('34% of the time.');
+    expect(content.supportLine).toBe('The city promised 2 days.');
+    expect(content.shareLine).toBe(
+      'Trash Collection - Missed requests met the deadline 34% of the time. The city promised 2 days.',
+    );
+  });
+
+  it('builds promise_broken moderate copy without repeating the hit rate', () => {
+    const content = buildSharePathContent(
+      {
+        id: 'promise_broken',
+        layout: 'compliance',
+        tone: 'danger',
+        promiseTier: 'moderate',
+      },
+      {
+        serviceType: 'DOB - Illegal Construction',
+        ward: 'Ward 7',
+        estimate: baseEstimate({ pct_met_sla: 65, sla_days: 6 }),
+        citywideEstimate: null,
+      },
+    );
+    expect(content.heroPrimary).toBe('65% of the time.');
+    expect(content.supportLine).toBe('The city gave itself 6 days.');
+    expect(content.shareLine).not.toContain('35%');
+  });
+
+  it('builds reliable read-aloud copy', () => {
+    const content = resolveSharePath({
+      serviceType: 'Alley Cleaning',
+      ward: 'Ward 8',
+      estimate: baseEstimate({ pct_met_sla: 100, sla_days: 45 }),
+      citywideEstimate: null,
+    });
+    expect(content.sentenceLead).toBe('Alley Cleaning requests met the deadline');
+    expect(content.heroPrimary).toBe('100% of the time.');
+    expect(content.supportLine).toBe('45-day window — rare for DC 311.');
   });
 });
 
@@ -253,5 +438,77 @@ describe('SHARE_PATH_THRESHOLDS', () => {
     expect(SHARE_PATH_THRESHOLDS.promiseBrokenBelow).toBe(80);
     expect(SHARE_PATH_THRESHOLDS.barelyAcceptableAt).toBe(95);
     expect(SHARE_PATH_THRESHOLDS.reliableAt).toBe(99);
+  });
+});
+
+describe('validateSharePathCoherence', () => {
+  it('flags wait punch paired with compliance kicker', () => {
+    const violations = validateSharePathCoherence({
+      id: 'perceptibly_slow',
+      layout: 'range',
+      tone: 'warning',
+      sentenceLead: 'Alley Cleaning usually takes',
+      sentenceLeadParts: { beforeType: '', serviceType: 'Alley Cleaning', afterType: 'usually takes' },
+      heroPrimary: '10–27 days.',
+      supportLine: 'Usually fine — until you\u2019re not.',
+      heroColor: '#f59e0b',
+      ogTitle: 'Alley Cleaning',
+      ogDescription: '',
+      shareLine: '',
+    });
+    expect(violations).toContain('wait punch paired with compliance kicker and no deadline bridge');
+    expect(violations).not.toContain('lead promises wait time but punch is a hit rate');
+  });
+
+  it('allows generous_deadline range when support bridges via deadline', () => {
+    const content = resolveSharePath({
+      serviceType: 'Roadway Repair',
+      ward: null,
+      estimate: baseEstimate({
+        p25: 21, p50: 46, p75: 80, pct_met_sla: 100, sla_days: 389,
+      }),
+      citywideEstimate: null,
+    });
+    expect(validateSharePathCoherence(content)).toEqual([]);
+  });
+
+  it('finds no punch/support mismatches across manifest estimates', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(__dirname, '..', '..', 'public', 'data', 'manifest.json'), 'utf-8'),
+    );
+    const dicts = manifest.dictionaries;
+    const citywideByType: Record<number, typeof manifest.estimates[0]> = {};
+    for (const row of manifest.estimates) {
+      if (row.w === null) citywideByType[row.st] = row;
+    }
+    const rowToEstimate = (row: typeof manifest.estimates[0]) => ({
+      n: row.n,
+      p25: row.p25,
+      p50: row.p50,
+      p75: row.p75,
+      p90: row.p90,
+      p95: row.p95,
+      sla_days: row.sla_days,
+      pct_met_sla: row.pct_met_sla,
+    });
+
+    const failures: string[] = [];
+    for (const row of manifest.estimates) {
+      const serviceType = dicts.serviceTypes[row.st];
+      if (!serviceType) continue;
+      const ward = row.w === null ? null : dicts.wards[row.w] ?? null;
+      const citywideRow = citywideByType[row.st];
+      const content = resolveSharePath({
+        serviceType,
+        ward,
+        estimate: rowToEstimate(row),
+        citywideEstimate: citywideRow ? rowToEstimate(citywideRow) : null,
+      });
+      const violations = validateSharePathCoherence(content);
+      if (violations.length > 0) {
+        failures.push(`${serviceType} / ${ward ?? 'citywide'} (${content.id}): ${violations.join('; ')}`);
+      }
+    }
+    expect(failures).toEqual([]);
   });
 });

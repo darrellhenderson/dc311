@@ -444,7 +444,7 @@ describe('buildShareText', () => {
       ticket: null,
       waitDays: null,
     });
-    expect(text).toBe('Pothole: typically 3–7 days. 94% on time — perceptibly slow.');
+    expect(text).toBe('Pothole requests met the deadline 94% of the time. Usually fine on a 21-day deadline — until you are in the 6%.');
     expect(text).not.toContain('Source:');
   });
 
@@ -489,7 +489,7 @@ describe('buildShareText', () => {
       ticket: null,
       waitDays: null,
     });
-    expect(text).toBe('Pothole in Ward 7: typically 4–8 days. 88% on time — perceptibly slow.');
+    expect(text).toBe('Pothole requests met the deadline 88% of the time. Sounds okay, but why set a deadline if you are not going to meet it?');
   });
 
   it('uses ward_gap copy when ward median exceeds citywide threshold', () => {
@@ -506,8 +506,8 @@ describe('buildShareText', () => {
       ticket: null,
       waitDays: null,
     });
-    expect(text).toContain('In Ward 7, pothole takes 3× longer');
-    expect(text).toContain('14 days here, 5 citywide');
+    expect(text).toContain('Pothole requests in Ward 7 take 14 days');
+    expect(text).toContain('Citywide? 5 days.');
   });
 });
 

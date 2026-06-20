@@ -29,7 +29,6 @@ export const SHARE_PATH_THRESHOLDS = {
   softWarningAt: 80,
   longWaitDays: 30,
   generousDeadlineMinSlaDays: 60,
-  generousDeadlineMinPct: 95,
   wideRangeIqrMin: 14,
   wideRangeSpreadRatio: 2,
   promiseBrokenSevereBelow: 50,
@@ -51,17 +50,89 @@ export interface SharePathSelection {
   citywideMedian?: number;
 }
 
+export interface SentenceLeadParts {
+  beforeType: string;
+  serviceType: string;
+  afterType: string;
+}
+
 export interface SharePathContent {
   id: SharePathId;
   layout: SharePathLayout;
   tone: SharePathTone;
+  sentenceLead: string;
+  sentenceLeadParts: SentenceLeadParts;
   heroPrimary: string;
-  heroLabel?: string;
   supportLine: string;
   heroColor: string;
   ogTitle: string;
   ogDescription: string;
   shareLine: string;
+}
+
+export const SHARE_SERVICE_TYPE_MAX_LENGTH = 38;
+
+/** Shortens long service names at a word boundary for OG card copy. */
+export function truncateServiceType(name: string, maxLen = SHARE_SERVICE_TYPE_MAX_LENGTH): string {
+  if (name.length <= maxLen) return name;
+  const truncated = name.slice(0, maxLen);
+  const lastSpace = truncated.lastIndexOf(' ');
+  if (lastSpace > maxLen * 0.5) {
+    return `${truncated.slice(0, lastSpace)}\u2026`;
+  }
+  return `${truncated.slice(0, maxLen - 1)}\u2026`;
+}
+
+export interface ContextLeadOptions {
+  predicate: string;
+  wardInLead?: boolean;
+}
+
+export function buildContextLead(
+  serviceType: string,
+  ward: string | null,
+  options: ContextLeadOptions,
+): SentenceLeadParts {
+  const wardPhrase = options.wardInLead && ward ? `in ${ward} ` : '';
+  return {
+    beforeType: '',
+    serviceType: truncateServiceType(serviceType),
+    afterType: `${wardPhrase}${options.predicate}`.trim(),
+  };
+}
+
+function formatSentenceLead(parts: SentenceLeadParts): string {
+  const lead = `${parts.beforeType}${parts.serviceType}`.trim();
+  return parts.afterType ? `${lead} ${parts.afterType}`.trim() : lead;
+}
+
+function formatPunchUpperBound(estimate: EstimateResult): string {
+  if (estimate.p75 < 1) return '< 1 day';
+  const upper = Math.round(estimate.p75);
+  if (upper <= 1) return 'Up to 1 day';
+  return `Up to ${upper} days`;
+}
+
+function formatHeadlinePunch(punch: string): string {
+  return punch.endsWith('.') ? punch : `${punch}.`;
+}
+
+function formatShareLine(lead: string, punch: string, proof: string): string {
+  const headline = formatHeadlinePunch(punch);
+  const head = lead ? `${lead} ${headline}` : headline;
+  return `${head} ${proof}`;
+}
+
+function withLeadParts(
+  parts: SentenceLeadParts,
+  content: Omit<SharePathContent, 'sentenceLead' | 'sentenceLeadParts'>,
+): SharePathContent {
+  return {
+    ...content,
+    sentenceLead: formatSentenceLead(parts),
+    sentenceLeadParts: parts,
+    heroPrimary: formatHeadlinePunch(content.heroPrimary),
+  };
 }
 
 const HERO_COLORS: Record<SharePathTone, string> = {
@@ -93,9 +164,7 @@ function isLongWait(estimate: EstimateResult): boolean {
 }
 
 export function isGenerousDeadline(estimate: EstimateResult): boolean {
-  return isLongWait(estimate)
-    && estimate.sla_days >= SHARE_PATH_THRESHOLDS.generousDeadlineMinSlaDays
-    && estimate.pct_met_sla >= SHARE_PATH_THRESHOLDS.generousDeadlineMinPct;
+  return estimate.sla_days >= SHARE_PATH_THRESHOLDS.generousDeadlineMinSlaDays;
 }
 
 function isQuickFix(estimate: EstimateResult): boolean {
@@ -153,7 +222,11 @@ export function selectSharePath(context: SharePathContext): SharePathSelection {
   }
 
   if (isGenerousDeadline(estimate)) {
-    return { id: 'generous_deadline', layout: 'range', tone: 'warning' };
+    return {
+      id: 'generous_deadline',
+      layout: isLongWait(estimate) ? 'range' : 'compliance',
+      tone: 'warning',
+    };
   }
 
   if (isLongWait(estimate)) {
@@ -162,10 +235,6 @@ export function selectSharePath(context: SharePathContext): SharePathSelection {
 
   if (isQuickFix(estimate)) {
     return { id: 'quick_fix', layout: 'range', tone: 'success' };
-  }
-
-  if (isWideRange(estimate)) {
-    return { id: 'wide_range', layout: 'range', tone: 'warning' };
   }
 
   if (isReliable(estimate)) {
@@ -177,7 +246,11 @@ export function selectSharePath(context: SharePathContext): SharePathSelection {
   }
 
   if (isPerceptiblySlow(estimate)) {
-    return { id: 'perceptibly_slow', layout: 'range', tone: 'warning' };
+    return { id: 'perceptibly_slow', layout: 'compliance', tone: 'warning' };
+  }
+
+  if (isWideRange(estimate)) {
+    return { id: 'wide_range', layout: 'range', tone: 'warning' };
   }
 
   return { id: 'typical', layout: 'range', tone: 'neutral' };
@@ -191,20 +264,47 @@ function formatRange(estimate: EstimateResult): string {
   return `${p25}\u2013${p75} days`;
 }
 
-function wardSuffix(ward: string | null): string {
-  return ward ? ` in ${ward}` : '';
-}
-
-function serviceLabel(serviceType: string): string {
-  return serviceType.toLowerCase();
-}
-
 function formatGenerousDeadlinePhrase(slaDays: number): string {
   if (slaDays >= 365) {
     const years = Math.round(slaDays / 365);
     return years <= 1 ? 'over a year' : `over ${years} years`;
   }
   return `${slaDays} days`;
+}
+
+/** Fast typical wait + padded SLA: punch states compliance; support calls out the bar. */
+function formatGenerousDeadlineFastSupport(
+  slaRate: number,
+  deadlinePhrase: string,
+): string {
+  if (slaRate >= SHARE_PATH_THRESHOLDS.barelyAcceptableAt) {
+    return `The deadline is ${deadlinePhrase}.`;
+  }
+  return `The city gave itself ${deadlinePhrase}.`;
+}
+
+/** Dry ward-vs-citywide kicker; punch already states the ward wait. */
+function formatCitywideQuip(citywideMedian: number): string {
+  const cm = Math.round(citywideMedian);
+  return cm === 1 ? 'Citywide? 1 day.' : `Citywide? ${cm} days.`;
+}
+
+/** Soft kicker for 95–98% compliance; punch already states the hit rate. */
+function formatDelaysCommonQuip(): string {
+  return 'Perceptibly close \u2014 not quite perfect.';
+}
+
+/** Disappointed kicker for sub-95% compliance; punch states the hit rate. */
+function formatPerceptiblySlowSupport(slaRate: number, slaDays: number): string {
+  const deadlineLabel = slaDays === 1 ? '1-day' : `${slaDays}-day`;
+  if (slaRate >= 90) {
+    const missRate = 100 - slaRate;
+    return `Usually fine on a ${deadlineLabel} deadline \u2014 until you are in the ${missRate}%.`;
+  }
+  if (slaRate >= 85) {
+    return 'Sounds okay, but why set a deadline if you are not going to meet it?';
+  }
+  return 'That\u2019s not good enough.';
 }
 
 export function formatWardGapHero(wardMedian: number, citywideMedian: number): string {
@@ -222,15 +322,21 @@ function buildWardGapCopy(
   serviceType: string,
   wardMedian: number,
   citywideMedian: number,
-): Pick<SharePathContent, 'heroLabel' | 'heroPrimary' | 'supportLine' | 'ogDescription' | 'shareLine'> {
+): Pick<SharePathContent, 'sentenceLead' | 'sentenceLeadParts' | 'heroPrimary' | 'supportLine' | 'ogDescription' | 'shareLine'> {
   const wm = Math.round(wardMedian);
-  const cm = Math.round(citywideMedian);
-  const gapHeadline = formatWardGapHero(wardMedian, citywideMedian);
-  const supportLine = `${wm} days in ${ward}. Citywide? ${cm}.`;
-  const shareLine = `In ${ward}, ${serviceLabel(serviceType)} takes ${gapHeadline} — ${wm} days here, ${cm} citywide.`;
+  const sentenceLeadParts = buildContextLead(serviceType, ward, {
+    predicate: 'take',
+    wardInLead: true,
+  });
+  sentenceLeadParts.afterType = `requests ${sentenceLeadParts.afterType}`;
+  const sentenceLead = formatSentenceLead(sentenceLeadParts);
+  const punch = wm === 1 ? '1 day' : `${wm} days`;
+  const supportLine = formatCitywideQuip(citywideMedian);
+  const shareLine = formatShareLine(sentenceLead, punch, supportLine);
   return {
-    heroLabel: `In ${ward}`,
-    heroPrimary: gapHeadline,
+    sentenceLead,
+    sentenceLeadParts,
+    heroPrimary: formatHeadlinePunch(punch),
     supportLine,
     ogDescription: shareLine,
     shareLine,
@@ -255,7 +361,8 @@ export function buildSharePathContent(
         id: 'ward_gap',
         layout: 'comparison',
         tone: 'warning',
-        heroLabel: copy.heroLabel,
+        sentenceLead: copy.sentenceLead,
+        sentenceLeadParts: copy.sentenceLeadParts,
         heroPrimary: copy.heroPrimary,
         supportLine: copy.supportLine,
         heroColor: HERO_COLORS.warning,
@@ -266,148 +373,187 @@ export function buildSharePathContent(
     }
     case 'promise_broken': {
       const tier = selection.promiseTier ?? promiseTier(estimate.pct_met_sla);
+      const parts = buildContextLead(serviceType, ward, { predicate: 'requests met the deadline' });
+      const lead = formatSentenceLead(parts);
+      const heroPrimary = `${slaRate}% of the time`;
       const supportLine = tier === 'severe'
-        ? `The city promised ${estimate.sla_days} days but only delivers ${slaRate}% of the time.`
-        : `The city gave itself ${estimate.sla_days} days and misses that ${100 - slaRate}% of the time.`;
-      return {
+        ? `The city promised ${estimate.sla_days} days.`
+        : `The city gave itself ${estimate.sla_days} days.`;
+      const shareLine = formatShareLine(lead, heroPrimary, supportLine);
+      return withLeadParts(parts, {
         id: 'promise_broken',
         layout: 'compliance',
         tone: 'danger',
-        heroPrimary: `Only ${slaRate}% on time`,
+        heroPrimary,
         supportLine,
         heroColor: HERO_COLORS.danger,
         ogTitle,
-        ogDescription: `Only ${slaRate}% meet the city's deadline for ${serviceLabel(serviceType)}.`,
-        shareLine: `Only ${slaRate}% meet the city's deadline for ${serviceLabel(serviceType)}.`,
-      };
+        ogDescription: shareLine,
+        shareLine,
+      });
     }
     case 'generous_deadline': {
       const deadlinePhrase = formatGenerousDeadlinePhrase(estimate.sla_days);
-      const supportLine = `Easy to hit ${slaRate}% when the deadline is ${deadlinePhrase}.`;
-      const shareLine = `${serviceType}${wardSuffix(ward)}: plan for ${range}. City gave itself ${deadlinePhrase} and meets it ${slaRate}% of the time.`;
-      return {
+      if (isLongWait(estimate)) {
+        const parts = buildContextLead(serviceType, ward, { predicate: 'usually takes' });
+        const lead = formatSentenceLead(parts);
+        const supportLine = `Easy to hit ${slaRate}% of your deadlines if you give yourself ${deadlinePhrase}.`;
+        const shareLine = formatShareLine(lead, range, supportLine);
+        return withLeadParts(parts, {
+          id: 'generous_deadline',
+          layout: 'range',
+          tone: 'warning',
+          heroPrimary: range,
+          supportLine,
+          heroColor: HERO_COLORS.warning,
+          ogTitle,
+          ogDescription: shareLine,
+          shareLine,
+        });
+      }
+      const parts = buildContextLead(serviceType, ward, { predicate: 'requests met the deadline' });
+      const lead = formatSentenceLead(parts);
+      const heroPrimary = `${slaRate}% of the time`;
+      const supportLine = formatGenerousDeadlineFastSupport(slaRate, deadlinePhrase);
+      const shareLine = formatShareLine(lead, heroPrimary, supportLine);
+      return withLeadParts(parts, {
         id: 'generous_deadline',
-        layout: 'range',
+        layout: 'compliance',
         tone: 'warning',
-        heroLabel: 'Plan for',
-        heroPrimary: range,
+        heroPrimary,
         supportLine,
         heroColor: HERO_COLORS.warning,
         ogTitle,
         ogDescription: shareLine,
-        shareLine: shareLine,
-      };
+        shareLine,
+      });
     }
     case 'long_wait': {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'usually takes' });
+      const lead = formatSentenceLead(parts);
+      const heroPrimary = formatPunchUpperBound(estimate);
       const supportLine = estimate.sla_days > 0
-        ? `City deadline is ${estimate.sla_days} days. ${slaRate}% on time.`
+        ? `The city says ${estimate.sla_days} days. You\u2019ll wait longer.`
         : `Based on ${estimate.n.toLocaleString()} resolved requests.`;
-      return {
+      const shareLine = formatShareLine(lead, heroPrimary, supportLine);
+      return withLeadParts(parts, {
         id: 'long_wait',
         layout: 'range',
         tone: 'warning',
-        heroLabel: 'Plan for',
-        heroPrimary: range,
+        heroPrimary,
         supportLine,
         heroColor: HERO_COLORS.warning,
         ogTitle,
-        ogDescription: `${serviceType}${wardSuffix(ward)}: plan for ${range}.`,
-        shareLine: `${serviceType}${wardSuffix(ward)}: plan for ${range}.`,
-      };
+        ogDescription: shareLine,
+        shareLine,
+      });
     }
     case 'quick_fix': {
-      const supportLine = 'Usually handled within a day or two.';
-      const shareLine = `${serviceType}${wardSuffix(ward)}: usually ${range}.`;
-      return {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'usually takes' });
+      const lead = formatSentenceLead(parts);
+      const supportLine = 'Rare speed for DC 311.';
+      const shareLine = formatShareLine(lead, range, supportLine);
+      return withLeadParts(parts, {
         id: 'quick_fix',
         layout: 'range',
         tone: 'success',
-        heroLabel: 'Often',
         heroPrimary: range,
         supportLine,
         heroColor: HERO_COLORS.success,
         ogTitle,
         ogDescription: shareLine,
-        shareLine: shareLine,
-      };
+        shareLine,
+      });
     }
     case 'wide_range': {
-      const supportLine = 'Outcomes vary wildly. They keep you on your toes.';
-      const shareLine = `${serviceType}${wardSuffix(ward)}: ${range}. Outcomes vary wildly — they keep you on your toes.`;
-      return {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'can take' });
+      const lead = formatSentenceLead(parts);
+      const supportLine = 'Outcomes vary wildly \u2014 they keep you on your toes.';
+      const shareLine = formatShareLine(lead, range, supportLine);
+      return withLeadParts(parts, {
         id: 'wide_range',
         layout: 'range',
         tone: 'warning',
-        heroLabel: 'Can take',
         heroPrimary: range,
         supportLine,
         heroColor: HERO_COLORS.warning,
         ogTitle,
         ogDescription: shareLine,
-        shareLine: shareLine,
-      };
+        shareLine,
+      });
     }
     case 'reliable': {
-      const supportLine = `One of the more dependable types — ${slaRate}% meet the ${estimate.sla_days}-day deadline.`;
-      return {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'requests met the deadline' });
+      const lead = formatSentenceLead(parts);
+      const heroPrimary = `${slaRate}% of the time`;
+      const supportLine = `${estimate.sla_days}-day window \u2014 rare for DC 311.`;
+      const shareLine = formatShareLine(lead, heroPrimary, supportLine);
+      return withLeadParts(parts, {
         id: 'reliable',
         layout: 'compliance',
         tone: 'success',
-        heroPrimary: `${slaRate}% on time`,
+        heroPrimary,
         supportLine,
         heroColor: HERO_COLORS.success,
         ogTitle,
-        ogDescription: `${slaRate}% of ${serviceType} requests meet the city\u2019s ${estimate.sla_days}-day deadline.`,
-        shareLine: `${slaRate}% of ${serviceType} requests meet the city\u2019s deadline.`,
-      };
+        ogDescription: shareLine,
+        shareLine,
+      });
     }
     case 'delays_common': {
-      const supportLine = 'Most requests are resolved on time, but delays are common.';
-      const shareLine = `${serviceType}${wardSuffix(ward)}: ${slaRate}% on time — delays happen.`;
-      return {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'requests met the deadline' });
+      const lead = formatSentenceLead(parts);
+      const heroPrimary = `${slaRate}% of the time`;
+      const supportLine = formatDelaysCommonQuip();
+      const shareLine = formatShareLine(lead, heroPrimary, supportLine);
+      return withLeadParts(parts, {
         id: 'delays_common',
         layout: 'compliance',
         tone: 'warning',
-        heroPrimary: `${slaRate}% on time`,
+        heroPrimary,
         supportLine,
         heroColor: HERO_COLORS.warning,
         ogTitle,
         ogDescription: shareLine,
-        shareLine: shareLine,
-      };
+        shareLine,
+      });
     }
     case 'perceptibly_slow': {
-      const supportLine = `Perceptibly slow — only ${slaRate}% meet the city\u2019s ${estimate.sla_days}-day deadline.`;
-      const shareLine = `${serviceType}${wardSuffix(ward)}: typically ${range}. ${slaRate}% on time — perceptibly slow.`;
-      return {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'requests met the deadline' });
+      const lead = formatSentenceLead(parts);
+      const heroPrimary = `${slaRate}% of the time`;
+      const supportLine = formatPerceptiblySlowSupport(slaRate, estimate.sla_days);
+      const shareLine = formatShareLine(lead, heroPrimary, supportLine);
+      return withLeadParts(parts, {
         id: 'perceptibly_slow',
-        layout: 'range',
+        layout: 'compliance',
         tone: 'warning',
-        heroLabel: 'Typically',
-        heroPrimary: range,
+        heroPrimary,
         supportLine,
         heroColor: HERO_COLORS.warning,
         ogTitle,
         ogDescription: shareLine,
-        shareLine: shareLine,
-      };
+        shareLine,
+      });
     }
     default: {
+      const parts = buildContextLead(serviceType, ward, { predicate: 'usually takes' });
+      const lead = formatSentenceLead(parts);
       const supportLine = estimate.sla_days > 0
-        ? `City\u2019s deadline is ${estimate.sla_days} days. ${slaRate}% on time.`
+        ? 'Par for the course at DC 311.'
         : `Based on ${estimate.n.toLocaleString()} resolved requests.`;
-      return {
+      const shareLine = formatShareLine(lead, range, supportLine);
+      return withLeadParts(parts, {
         id: 'typical',
         layout: 'range',
         tone: 'neutral',
-        heroLabel: 'Typically',
         heroPrimary: range,
         supportLine,
         heroColor: HERO_COLORS.neutral,
         ogTitle,
-        ogDescription: `${serviceType}${wardSuffix(ward)}: typically ${range}.`,
-        shareLine: `${serviceType}${wardSuffix(ward)}: typically ${range}.`,
-      };
+        ogDescription: shareLine,
+        shareLine,
+      });
     }
   }
 }
@@ -442,4 +588,88 @@ export function checkSharePathDistribution(
   }
 
   return { counts, total, violations };
+}
+
+export type SharePunchKind = 'compliance' | 'wait' | 'ward_wait';
+
+export type ShareSupportTopic = 'compliance' | 'wait' | 'deadline' | 'ward' | 'meta';
+
+const COMPLIANCE_PUNCH = /^\d+% of the time\.?$/;
+const WAIT_PUNCH = /^(?:\d+–\d+ days|< 1 day|Same day|Up to \d+ days|\d+ days|1 day)\.?$/;
+const WARD_WAIT_PUNCH = /^(?:\d+ days|1 day)\.?$/;
+
+const COMPLIANCE_SUPPORT = /Usually fine|Perceptibly close|Sounds okay|That.s not good enough|Not for everyone|Quick for most|Easy to hit \d+%/;
+const WAIT_SUPPORT = /Rare speed|wait longer|Par for the course|worst case/;
+const DEADLINE_SUPPORT = /deadline|promised|gave itself|city says \d+ days|-day window/;
+const WARD_SUPPORT = /Citywide\?/;
+const META_SUPPORT = /wildly|on your toes|Based on \d+ resolved/;
+
+/** Identifies what the hero stat is about so support can be checked against it. */
+export function classifySharePunch(
+  content: Pick<SharePathContent, 'heroPrimary' | 'layout'>,
+): SharePunchKind | 'unknown' {
+  const hero = content.heroPrimary.replace(/\.$/, '');
+  if (COMPLIANCE_PUNCH.test(content.heroPrimary)) return 'compliance';
+  if (content.layout === 'comparison' && WARD_WAIT_PUNCH.test(hero)) return 'ward_wait';
+  if (WAIT_PUNCH.test(hero)) return 'wait';
+  return 'unknown';
+}
+
+/** Tags support-line topics; deadline can bridge wait punches to compliance kickers. */
+export function classifyShareSupportTopics(supportLine: string): ShareSupportTopic[] {
+  const topics: ShareSupportTopic[] = [];
+  if (COMPLIANCE_SUPPORT.test(supportLine)) topics.push('compliance');
+  if (WAIT_SUPPORT.test(supportLine)) topics.push('wait');
+  if (DEADLINE_SUPPORT.test(supportLine)) topics.push('deadline');
+  if (WARD_SUPPORT.test(supportLine)) topics.push('ward');
+  if (META_SUPPORT.test(supportLine)) topics.push('meta');
+  return topics;
+}
+
+/** Flags punch/support frames that talk past each other (e.g. wait range + "usually fine"). */
+export function validateSharePathCoherence(content: SharePathContent): string[] {
+  const violations: string[] = [];
+  const punch = classifySharePunch(content);
+  const topics = classifyShareSupportTopics(content.supportLine);
+  const topicSet = new Set(topics);
+  const lead = content.sentenceLead;
+
+  if (content.layout === 'compliance' && punch !== 'compliance') {
+    violations.push('compliance layout requires a hit-rate punch');
+  }
+  if (content.layout === 'range' && punch === 'compliance') {
+    violations.push('range layout cannot use a hit-rate punch');
+  }
+  if (content.layout === 'comparison' && punch !== 'ward_wait') {
+    violations.push('comparison layout requires a ward wait punch');
+  }
+
+  if (lead.includes('met the deadline') && punch !== 'compliance') {
+    violations.push('lead promises deadline compliance but punch is not a hit rate');
+  }
+  if ((lead.includes('usually takes') || lead.includes('can take')) && punch === 'compliance') {
+    violations.push('lead promises wait time but punch is a hit rate');
+  }
+  if (lead.includes(' takes') && content.layout === 'comparison' && punch !== 'ward_wait') {
+    violations.push('ward comparison lead requires a ward wait punch');
+  }
+
+  const hasComplianceSupport = topicSet.has('compliance');
+  const hasWaitSupport = topicSet.has('wait');
+  const hasDeadlineBridge = topicSet.has('deadline');
+
+  if (punch === 'wait' && hasComplianceSupport && !hasDeadlineBridge) {
+    violations.push('wait punch paired with compliance kicker and no deadline bridge');
+  }
+  if (punch === 'compliance' && hasWaitSupport && !hasDeadlineBridge) {
+    violations.push('hit-rate punch paired with wait kicker and no deadline bridge');
+  }
+  if (punch === 'ward_wait' && !topicSet.has('ward')) {
+    violations.push('ward wait punch missing citywide comparison kicker');
+  }
+  if (punch === 'unknown') {
+    violations.push(`unrecognized punch: ${content.heroPrimary}`);
+  }
+
+  return violations;
 }
