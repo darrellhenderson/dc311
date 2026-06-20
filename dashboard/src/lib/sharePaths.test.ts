@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   buildSharePathContent,
   formatWardGapHero,
@@ -474,7 +475,7 @@ describe('validateSharePathCoherence', () => {
 
   it('finds no punch/support mismatches across manifest estimates', () => {
     const manifest = JSON.parse(
-      readFileSync(join(__dirname, '..', '..', 'public', 'data', 'manifest.json'), 'utf-8'),
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'data', 'manifest.json'), 'utf-8'),
     );
     const dicts = manifest.dictionaries;
     const citywideByType: Record<number, typeof manifest.estimates[0]> = {};
