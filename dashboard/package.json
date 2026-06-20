@@ -10,6 +10,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx --max-warnings 0",
+    "pretest": "python3 scripts/prebuild_data.py",
     "test": "vitest run",
     "generate-share": "npx tsx scripts/generate_share_assets.mjs"
   },
