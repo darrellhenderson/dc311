@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { EstimateResult, estimateBarEnd } from '../../lib/estimateData';
 import { CATEGORICAL_COLORS, colors } from '../../lib/theme';
 
@@ -15,6 +16,28 @@ function formatTick(days: number): string {
   return `${Math.round(days)}d`;
 }
 
+function tickLabelPosition(
+  positionPct: number,
+  stripWidthPx: number,
+  labelText: string,
+): { left: string; alignClass: string } {
+  const labelWidthPx = labelText.length * 7.5;
+  const halfLabelPx = labelWidthPx / 2;
+
+  if (stripWidthPx <= 0) {
+    return { left: `${positionPct}%`, alignClass: '-translate-x-full' };
+  }
+
+  const centerPx = (positionPct / 100) * stripWidthPx;
+  if (centerPx + halfLabelPx > stripWidthPx) {
+    return { left: `${positionPct}%`, alignClass: '-translate-x-full' };
+  }
+  if (centerPx - halfLabelPx < 0) {
+    return { left: `${positionPct}%`, alignClass: '' };
+  }
+  return { left: `${positionPct}%`, alignClass: '-translate-x-1/2' };
+}
+
 const LABELS = {
   typical: 'typical range',
   longTail: 'slower than most',
@@ -29,7 +52,28 @@ const SHORT_LABELS = {
   you: 'you',
 } as const;
 
+// Bracket glyphs consume fixed width; pixel budget avoids truncated labels in narrow bands.
+const BRACKET_OVERHEAD_PX = 36;
+const MIN_TYPICAL_LABEL_PX = 40;
+const MIN_LONG_TAIL_LABEL_PX = 28;
+
 export default function TimelineStrip({ estimate, markerDays }: TimelineStripProps) {
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [stripWidth, setStripWidth] = useState(0);
+
+  useEffect(() => {
+    const node = stripRef.current;
+    if (!node) return undefined;
+
+    const syncWidth = () => {
+      setStripWidth(node.clientWidth);
+    };
+
+    syncWidth();
+    const observer = new ResizeObserver(syncWidth);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   const barEnd = estimateBarEnd(estimate);
   const maxValue = Math.max(
     barEnd,
@@ -51,39 +95,55 @@ export default function TimelineStrip({ estimate, markerDays }: TimelineStripPro
   // For 0-day cases, calculate position of 1 day for the bar end
   const oneDayLeft = isZeroDayCase ? pct(1, maxValue) : null;
 
+  const typicalBandPx = (typicalBandWidth / 100) * stripWidth;
+  const longTailBandPx = (longTailWidth / 100) * stripWidth;
+
   // Choose label set based on available space
-  const useShortLabels = typicalBandWidth < 12 || (longTailWidth > 0 && longTailWidth < 12) || isZeroDayCase;
+  const useShortLabels = typicalBandPx < 120
+    || (longTailWidth > 0 && longTailBandPx < 100)
+    || isZeroDayCase;
   const labels = useShortLabels ? SHORT_LABELS : LABELS;
 
-  // Hide bracket row when bands are too narrow to fit text, or when typical collides with marker, or for 0-day cases
-  const showBracketAnnotations = typicalBandWidth >= 8 && !isZeroDayCase;
+  // Hide bracket row when bands are too narrow to fit text, or for 0-day cases
+  const showTypicalAnnotation = typicalBandPx >= BRACKET_OVERHEAD_PX + MIN_TYPICAL_LABEL_PX;
+  const showLongTailAnnotation = longTailWidth > 0
+    && longTailBandPx >= BRACKET_OVERHEAD_PX + MIN_LONG_TAIL_LABEL_PX;
+  const showBracketAnnotations = showTypicalAnnotation && !isZeroDayCase;
 
   const ariaLabel = markerDays != null && markerDays > 0
     ? `Typical resolution ${formatTick(estimate.p25)} to ${formatTick(estimate.p75)}. You at ${formatTick(markerDays)}.`
     : `Typical resolution ${formatTick(estimate.p25)} to ${formatTick(estimate.p75)}.`;
 
+  const slaLabelText = `city's deadline ${formatTick(estimate.sla_days)}`;
+  const slaLabelPosition = slaLeft !== null
+    ? tickLabelPosition(slaLeft, stripWidth, slaLabelText)
+    : null;
+  const markerLabelPosition = markerLeft !== null
+    ? tickLabelPosition(markerLeft, stripWidth, LABELS.you)
+    : null;
+
   return (
-    <div className="font-mono" aria-label={ariaLabel}>
+    <div ref={stripRef} className="font-mono" aria-label={ariaLabel}>
       {showBracketAnnotations && (
         <div className="relative h-6 mb-1 text-[11px] text-text-muted">
           {/* Typical band bracket */}
           <div
-            className="absolute bottom-0 flex items-center"
+            className="absolute bottom-0 flex items-center overflow-hidden"
             style={{ left: `${p25Left}%`, width: `${Math.max(typicalBandWidth, 0)}%` }}
           >
-            <span>╭──</span>
-            <div className="flex-1 text-center px-1 truncate">{labels.typical}</div>
-            <span>──╮</span>
+            <span className="shrink-0">╭──</span>
+            <div className="flex-1 min-w-0 text-center px-1 truncate">{labels.typical}</div>
+            <span className="shrink-0">──╮</span>
           </div>
           {/* Long tail bracket — only show if wide enough */}
-          {longTailWidth >= 10 && (
+          {showLongTailAnnotation && (
             <div
-              className="absolute bottom-0 flex items-center"
+              className="absolute bottom-0 flex items-center overflow-hidden"
               style={{ left: `${p75Left}%`, width: `${Math.max(longTailWidth, 0)}%` }}
             >
-              <span>╭──</span>
-              <div className="flex-1 text-center px-1 truncate">{labels.longTail}</div>
-              <span>──╮</span>
+              <span className="shrink-0">╭──</span>
+              <div className="flex-1 min-w-0 text-center px-1 truncate">{labels.longTail}</div>
+              <span className="shrink-0">──╮</span>
             </div>
           )}
         </div>
@@ -176,7 +236,8 @@ export default function TimelineStrip({ estimate, markerDays }: TimelineStripPro
                 </span>
               )}
               {/* Hide bar-end tick when it's within 5% of p75 (duplicate labels) or would display as "0d" */}
-              {barEnd >= 0.5 && barEndLeft - p75Left >= 5 && (
+              {barEnd >= 0.5 && barEndLeft - p75Left >= 5
+                && !(slaLeft !== null && Math.abs(barEndLeft - slaLeft) < 8) && (
                 <span className="absolute -translate-x-1/2 tabular-nums" style={{ left: `${barEndLeft}%` }}>
                   {formatTick(barEnd)}
                 </span>
@@ -186,20 +247,19 @@ export default function TimelineStrip({ estimate, markerDays }: TimelineStripPro
         </div>
         <div className="relative h-5">
           {/* Hide SLA tick when it would collide with marker (within 5%) */}
-          {slaLeft !== null && !(markerLeft !== null && Math.abs(slaLeft - markerLeft) < 5) && (
+          {slaLeft !== null && slaLabelPosition !== null
+            && !(markerLeft !== null && Math.abs(slaLeft - markerLeft) < 5) && (
             <span
-              className="absolute -translate-x-1/2 tabular-nums whitespace-nowrap"
-              style={{ left: `${slaLeft}%`, color: colors.warning }}
+              className={`absolute tabular-nums whitespace-nowrap ${slaLabelPosition.alignClass}`}
+              style={{ left: slaLabelPosition.left, color: colors.warning }}
             >
-              city's deadline {formatTick(estimate.sla_days)}
+              {slaLabelText}
             </span>
           )}
-          {markerLeft !== null && (
+          {markerLeft !== null && markerLabelPosition !== null && (
             <span
-              className={`absolute font-medium whitespace-nowrap tabular-nums transition-[left] duration-500 ease-out ${
-                markerLeft > 95 ? 'text-right right-0' : '-translate-x-1/2'
-              }`}
-              style={{ left: markerLeft > 95 ? '100%' : `${markerLeft}%`, color: colors.danger }}
+              className={`absolute font-medium whitespace-nowrap tabular-nums transition-[left] duration-500 ease-out ${markerLabelPosition.alignClass}`}
+              style={{ left: markerLabelPosition.left, color: colors.danger }}
             >
               {LABELS.you}
             </span>
