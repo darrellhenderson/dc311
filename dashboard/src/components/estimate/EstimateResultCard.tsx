@@ -287,7 +287,7 @@ export default function EstimateResultCard({
         )}
 
         <p className="text-caption font-semibold text-text-muted uppercase tracking-wide mb-1">
-          Typical for this type
+          Typical for this request
         </p>
         <p className="font-mono text-4xl sm:text-5xl font-bold tabular-nums tracking-tight leading-none text-gray-900 mb-2">
           {formatHeadlineRange(estimate)}
