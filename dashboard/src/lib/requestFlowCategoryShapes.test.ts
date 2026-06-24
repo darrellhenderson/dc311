@@ -14,7 +14,7 @@ describe('requestFlowCategoryShapes', () => {
   });
 
   it('does not use bracket or paren glyphs', () => {
-    const forbidden = /^[{}\[\]()<>]$/;
+    const forbidden = /^[{}[\]()<>]$/;
     for (const glyph of Object.values(REQUEST_FLOW_CATEGORY_ASCII)) {
       expect(glyph).not.toMatch(forbidden);
     }

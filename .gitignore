@@ -24,4 +24,5 @@ venv/
 data/raw/*.csv
 data/raw/*.json
 dashboard/public/data/*.json
+dashboard/public/data/*.bin
 dashboard/public/data/rollups/*.json
