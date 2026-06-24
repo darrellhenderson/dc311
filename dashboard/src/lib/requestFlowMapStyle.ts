@@ -159,7 +159,7 @@ export function configureRequestFlowBasemap(map: MaplibreMap): void {
   }
 }
 
-const MAP_INTERACTION_EVENTS = ['movestart', 'moveend'] as const;
+const MAP_INTERACTION_EVENTS: readonly string[] = [];
 
 export interface RequestFlowMapInteractionHandlers {
   onStart?: () => void;

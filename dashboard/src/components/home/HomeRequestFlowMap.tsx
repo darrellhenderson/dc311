@@ -822,13 +822,11 @@ export default function HomeRequestFlowMap({
         return;
       }
 
-      const mapInteractionActive = mapInteractionDepthRef.current > 0;
       const frameIntervalMs = baseFrameIntervalMs;
       const syncInProgress = chunkedSyncRef.current !== null;
 
       if (
-        !mapInteractionActive
-        && !scrubbingRef.current
+        !scrubbingRef.current
         && !syncInProgress
         && now - lastSimTick >= frameIntervalMs
       ) {
@@ -851,22 +849,20 @@ export default function HomeRequestFlowMap({
         } else {
           playheadRef.current = nextPlayhead;
         }
-      } else if (mapInteractionActive || scrubbingRef.current) {
+      } else if (scrubbingRef.current) {
         lastSimTick = now;
         lastPaintTick = now;
       }
 
       if (
-        !mapInteractionActive
-        && !scrubbingRef.current
+        !scrubbingRef.current
         && playingRef.current
       ) {
         paintWiggleFrame(playheadRef.current, now);
       }
 
       if (
-        !mapInteractionActive
-        && !scrubbingRef.current
+        !scrubbingRef.current
         && now - lastPaintTick >= frameIntervalMs
       ) {
         const updateHud = now - lastHudPaint >= HUD_INTERVAL_MS;
